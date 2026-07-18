@@ -403,10 +403,12 @@ destination `SHD200SYSTEM`), ATC readiness (already configured centrally in
 that client), and the requirement to Git-snapshot code before any change —
 see §3a and §6.6. Still outstanding:
 
-1. **BTP destination auth type for `SHD200SYSTEM`** — basic auth, principal
-   propagation, or OAuth2SAMLBearerAssertion? Determines the technical-user
-   provisioning request to raise with SAP AMS, and whether this app can use
-   one shared technical user or needs per-developer identity flow-through.
+1. **BTP destination auth type for `SHD200SYSTEM`: confirmed OAuth.** Still to
+   pin down when the destination is actually built: which grant
+   (OAuth2ClientCredentials — one shared technical identity — vs.
+   OAuth2SAMLBearerAssertion/principal propagation — flows through each
+   developer's identity) — this determines the AMS provisioning request and
+   whether audit trails show a single service account or per-user identity.
 2. **Fix-authoring source**: are you comfortable with Claude/an LLM
    authoring the non-canned fixes (constrained + fully validated + human-
    gated via PR review), or do you want v1 scoped to *only* the native ADT
