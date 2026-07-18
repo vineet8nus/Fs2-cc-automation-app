@@ -8,13 +8,14 @@
     "web"
   ],
   "engines": {
-    "node": ">=18 <23"
+    "node": "22.x"
   },
   "scripts": {
     "build:web": "npm run build --workspace=web",
     "build:server": "npm run build --workspace=server",
     "copy:web": "node scripts/copy-frontend.js",
     "build": "npm run build:web && npm run build:server && npm run copy:web",
+    "prepare:deploy": "node scripts/prepare-deploy.js",
     "postinstall": "npm run build",
     "start": "node server/dist/index.js",
     "dev:server": "npm run dev --workspace=server",

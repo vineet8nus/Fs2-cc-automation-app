@@ -53,12 +53,24 @@ cd server && npm test   # vitest: risk scoring, excel parsing, state machine,
 ## Deploy to Cloud Foundry
 
 ```
-cf login -a <api endpoint> -o <org> -s <space>   # or --sso-passcode <code>
-npm run build
+cf login -a <api endpoint> -o <org> -s <space>   # or --login --sso-passcode <code>
+npm run build            # compiles server + frontend into server/dist
+npm run prepare:deploy   # assembles deploy/ — compiled app + runtime-only package.json, no build hooks
 cf push
 ```
 
-`manifest.yml` pushes the single combined Node app. This is intentionally the
-simple path (no XSUAA/approuter/destination-service wiring yet) — see the
-design doc §6.5/§9 for what production hardening (auth, destination binding
-to `SHD200SYSTEM`) adds on top once the SAP connectivity details are final.
+`manifest.yml` points at `deploy/`, not the repo root. The CF `nodejs_buildpack`
+runs its own `npm install` + optional `npm run build` during staging, and in
+practice its node_modules cache can short-circuit that install before
+devDependencies (tsc/vite) land — so rather than fight it, the app is built
+locally first and only the compiled output + a minimal runtime-only
+`package.json` (no `build`/`postinstall` scripts) is pushed. `deploy/` is
+generated, gitignored, and safe to delete/regenerate any time.
+
+This is deployed as a single combined Node app (no XSUAA/approuter/
+destination-service wiring yet) — see the design doc §6.5/§9 for what
+production hardening (auth, destination binding to `SHD200SYSTEM`, a
+persistent DB instead of the in-memory store) adds once the SAP connectivity
+details are final. The in-memory program store and local Git mirror both
+live on the container's ephemeral filesystem, so app restarts currently lose
+state — acceptable for this mock-mode milestone, not for production.

@@ -2,13 +2,12 @@
 applications:
   - name: fs2-cc-automation-app
     memory: 512M
-    disk_quota: 1G
+    disk_quota: 1536M
     instances: 1
     buildpacks:
       - nodejs_buildpack
-    path: .
+    path: deploy
     command: npm start
     env:
-      NPM_CONFIG_PRODUCTION: false
       SAP_INTEGRATION_MODE: mock
       NODE_ENV: production

@@ -12,3 +12,4 @@ mta_archives/
 coverage/
 server/data/
 *.tsbuildinfo
+/deploy/
