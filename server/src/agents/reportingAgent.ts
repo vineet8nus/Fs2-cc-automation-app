@@ -9,6 +9,14 @@ export function generateReport(program: Program): TechSpecReport {
   const lines: string[] = [];
   lines.push(`# Clean Core Remediation — ${program.name}`);
   lines.push("");
+  if ((process.env.SAP_INTEGRATION_MODE ?? "mock") !== "real") {
+    lines.push(
+      "> ⚠️ **SIMULATED DATA.** This run used `SAP_INTEGRATION_MODE=mock` — no connection was made to " +
+        "SHD200SYSTEM or any SAP system. The source, findings, and fixes below are a fixed demonstration " +
+        "template, not a real analysis of this program. Do not act on this report as if it reflects real code."
+    );
+    lines.push("");
+  }
   lines.push(`**Package:** ${program.package}  `);
   lines.push(`**Business area:** ${program.businessArea}  `);
   lines.push(`**Criticality:** ${program.criticality}  `);
