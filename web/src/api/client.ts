@@ -1,0 +1,58 @@
+import { ProgramDetail, ProgramSummary, RetroMetrics } from "../types";
+
+async function json<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error ?? `Request failed with ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  async health() {
+    return json<{ status: string; sapIntegrationMode: string }>(await fetch("/api/health"));
+  },
+  async listPrograms() {
+    return json<ProgramSummary[]>(await fetch("/api/programs"));
+  },
+  async getProgram(id: string) {
+    return json<ProgramDetail>(await fetch(`/api/programs/${id}`));
+  },
+  async uploadExcel(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    return json<{ ingested: number; programs: ProgramSummary[] }>(
+      await fetch("/api/programs/upload", { method: "POST", body: form })
+    );
+  },
+  async gate1(id: string, decision: "approve" | "reject" | "defer", approvedFindingIds?: string[], comment?: string) {
+    return json<ProgramDetail>(
+      await fetch(`/api/programs/${id}/gate1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, approvedFindingIds, comment }),
+      })
+    );
+  },
+  async gate2(id: string, decision: "approve" | "request_changes", comment?: string) {
+    return json<ProgramDetail>(
+      await fetch(`/api/programs/${id}/gate2`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, comment }),
+      })
+    );
+  },
+  async getReport(id: string) {
+    const res = await fetch(`/api/programs/${id}/report`);
+    if (!res.ok) throw new Error("Report not available yet");
+    return res.text();
+  },
+  async getDiff(id: string) {
+    const res = await fetch(`/api/programs/${id}/diff`);
+    return res.text();
+  },
+  async retro() {
+    return json<RetroMetrics>(await fetch("/api/retro"));
+  },
+};

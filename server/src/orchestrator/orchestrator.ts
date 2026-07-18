@@ -1,0 +1,217 @@
+import { v4 as uuidv4 } from "uuid";
+import { AuditEntry, ExcelIntakeRow, Finding, Program, WorkflowState } from "../domain/types";
+import { ProgramStore } from "../store/store";
+import { SapClient } from "../sap/SapClient";
+import { runDiscovery } from "../agents/discoveryAgent";
+import { runCleanCoreAnalysis } from "../agents/cleanCoreAnalysisAgent";
+import { runBaselineTests } from "../agents/baselineTestAgent";
+import { runRemediation } from "../agents/remediationAgent";
+import { runValidation } from "../agents/validationAgent";
+import { generateReport } from "../agents/reportingAgent";
+import { commitRemediation, diffAgainstBaseline, runGitSync } from "../agents/gitSyncAgent";
+import { computeRiskScore, worstExtensibilityLevel } from "../risk/riskScore";
+import { assertTransitionAllowed } from "./stateMachine";
+
+const MAX_REMEDIATION_ATTEMPTS = 2;
+
+function audit(program: Program, actor: string, action: string, from?: WorkflowState, to?: WorkflowState, details?: string) {
+  const entry: AuditEntry = { timestamp: new Date().toISOString(), actor, action, fromState: from, toState: to, details };
+  program.auditLog.push(entry);
+}
+
+function moveTo(program: Program, to: WorkflowState, actor: string, action: string, details?: string) {
+  assertTransitionAllowed(program.state, to);
+  const from = program.state;
+  program.state = to;
+  audit(program, actor, action, from, to, details);
+}
+
+export class Orchestrator {
+  constructor(private readonly store: ProgramStore, private readonly sap: SapClient) {}
+
+  /** Creates one workflow instance per Excel row and runs it through the fully-automatic phases (Phase 2-4). */
+  async ingest(rows: ExcelIntakeRow[]): Promise<Program[]> {
+    const created: Program[] = [];
+    for (const row of rows) {
+      const now = new Date().toISOString();
+      let program: Program = {
+        id: uuidv4(),
+        name: row.programName,
+        package: row.package,
+        businessArea: row.businessArea,
+        criticality: row.criticality,
+        owner: row.owner,
+        state: "UPLOADED",
+        dependencies: [],
+        findings: [],
+        remediationAttempts: 0,
+        createdAt: now,
+        updatedAt: now,
+        auditLog: [],
+      };
+      audit(program, "system", "excel-intake", undefined, "UPLOADED", `Row: ${row.programName}`);
+      this.store.save(program);
+
+      try {
+        program = await this.runAutomaticPipeline(program);
+      } catch (err) {
+        audit(program, "system", "pipeline-error", program.state, program.state, String(err));
+        this.store.save(program);
+      }
+      created.push(program);
+    }
+    return created;
+  }
+
+  /** Phases 2-4: Git baseline -> Discovery -> Analysis -> Baseline tests, up to Human Gate 1. */
+  private async runAutomaticPipeline(program: Program): Promise<Program> {
+    const discovery = await runDiscovery(program.name, this.sap);
+    program.gitBaseline = runGitSync(program.name, discovery.programSource, discovery.dependencies, discovery.dependencySources);
+    moveTo(program, "GIT_BASELINED", "GitSyncAgent", "baseline-snapshot", `commit ${program.gitBaseline.baselineCommit.slice(0, 10)}`);
+    this.store.save(program);
+
+    program.dependencies = discovery.dependencies;
+    moveTo(program, "DISCOVERED", "DiscoveryAgent", "dependency-graph-built", `${discovery.dependencies.length} dependent objects`);
+    this.store.save(program);
+
+    const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
+    program.findings = await runCleanCoreAnalysis(objectNames, program.name, discovery.programSource, this.sap);
+    program.worstExtensibilityLevel = worstExtensibilityLevel(program.findings);
+    program.riskScore = computeRiskScore(program.findings, program.criticality, program.dependencies.length);
+    moveTo(program, "ANALYZED", "CleanCoreAnalysisAgent", "atc-run-complete", `${program.findings.length} findings, risk ${program.riskScore.total} (${program.riskScore.band})`);
+    this.store.save(program);
+
+    moveTo(program, "BASELINING_TESTS", "BaselineTestAgent", "baseline-test-run-start");
+    program.baselineTests = await runBaselineTests(program.name, this.sap);
+    moveTo(program, "AWAITING_HUMAN_REVIEW_1", "BaselineTestAgent", "baseline-captured", `${program.baselineTests.cases.length} test cases`);
+    this.store.save(program);
+
+    return program;
+  }
+
+  /** Human Gate 1: developer approves scope (and confirms generated baseline tests) or parks the program. */
+  async gate1Decision(
+    programId: string,
+    decision: "approve" | "reject" | "defer",
+    approvedFindingIds: string[] | undefined,
+    comment: string | undefined
+  ): Promise<Program> {
+    const program = this.mustGet(programId);
+    if (program.state !== "AWAITING_HUMAN_REVIEW_1") {
+      throw new Error(`Program is in state ${program.state}, not awaiting Gate 1 review.`);
+    }
+
+    if (decision !== "approve") {
+      for (const f of program.findings) f.status = "deferred";
+      moveTo(program, "PARKED", "human:gate1", `gate1-${decision}`, comment);
+      this.store.save(program);
+      return program;
+    }
+
+    const idsToApprove = approvedFindingIds && approvedFindingIds.length > 0 ? new Set(approvedFindingIds) : new Set(program.findings.map((f) => f.id));
+    for (const f of program.findings) {
+      f.status = idsToApprove.has(f.id) ? "approved" : "deferred";
+    }
+    if (program.baselineTests) {
+      for (const t of program.baselineTests.cases) t.humanConfirmed = true;
+    }
+    moveTo(program, "REMEDIATING", "human:gate1", "gate1-approve", comment ?? `${idsToApprove.size} finding(s) approved for remediation`);
+    this.store.save(program);
+
+    return this.remediateAndValidate(program);
+  }
+
+  /**
+   * Phases 6-7: apply fixes for approved findings, open a PR, validate, and
+   * (on pass) present for Gate 2. `sourceOverride` carries the previous
+   * attempt's fixed source into a retry so a failed validation doesn't
+   * silently discard fixes already applied by an earlier attempt.
+   */
+  private async remediateAndValidate(program: Program, sourceOverride?: string): Promise<Program> {
+    const approved = program.findings.filter((f) => f.status === "approved");
+    const baseSource = sourceOverride ?? (await this.sap.readObjectSource(program.name)).source;
+    const remediation = runRemediation(baseSource, approved);
+
+    for (const id of remediation.appliedFindingIds) {
+      const f = program.findings.find((x) => x.id === id);
+      if (f) f.status = "fixed";
+    }
+    program.remediationAttempts += 1;
+
+    if (!program.gitBaseline) throw new Error("Program has no git baseline to commit remediation against.");
+    program.gitBaseline = commitRemediation(
+      program.name,
+      program.gitBaseline,
+      remediation.newSource,
+      remediation.changeLog.join("; ") || "no automated changes applied"
+    );
+    moveTo(program, "VALIDATING", "RemediationAgent", "fix-branch-pr-opened", `PR ${program.gitBaseline.prUrl}`);
+    this.store.save(program);
+
+    const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
+    const fixedFindings = program.findings.filter((f) => f.status === "fixed");
+    program.validationReport = await runValidation(
+      program.name,
+      objectNames,
+      remediation.newSource,
+      fixedFindings,
+      program.findings,
+      program.baselineTests ?? { runAt: new Date().toISOString(), cases: [] },
+      this.sap
+    );
+
+    if (program.validationReport.overallPass) {
+      for (const f of fixedFindings) f.status = "validated";
+      moveTo(program, "AWAITING_HUMAN_REVIEW_2", "ValidationAgent", "validation-passed");
+      this.store.save(program);
+      return program;
+    }
+
+    if (program.remediationAttempts >= MAX_REMEDIATION_ATTEMPTS) {
+      moveTo(program, "ESCALATED", "ValidationAgent", "validation-failed-escalated", program.validationReport.messages.join("; "));
+      this.store.save(program);
+      return program;
+    }
+
+    moveTo(program, "REMEDIATING", "ValidationAgent", "validation-failed-retry", program.validationReport.messages.join("; "));
+    this.store.save(program);
+    return this.remediateAndValidate(program, remediation.newSource);
+  }
+
+  /** Human Gate 2: standard PR review — approve/merge, or request changes. */
+  async gate2Decision(programId: string, decision: "approve" | "request_changes", comment: string | undefined): Promise<Program> {
+    const program = this.mustGet(programId);
+    if (program.state !== "AWAITING_HUMAN_REVIEW_2") {
+      throw new Error(`Program is in state ${program.state}, not awaiting Gate 2 review.`);
+    }
+
+    if (decision === "request_changes") {
+      if (!program.gitBaseline) throw new Error("Missing git baseline.");
+      program.gitBaseline.prState = "changes_requested";
+      for (const f of program.findings.filter((x) => x.status === "validated")) f.status = "approved";
+      moveTo(program, "REMEDIATING", "human:gate2", "gate2-request-changes", comment);
+      this.store.save(program);
+      return this.remediateAndValidate(program);
+    }
+
+    if (program.gitBaseline) program.gitBaseline.prState = "merged";
+    moveTo(program, "TRANSPORT_RELEASED", "human:gate2", "gate2-approve-merge", comment);
+    moveTo(program, "DOCUMENTED", "ReportingAgent", "report-generated");
+    program.report = generateReport(program);
+    moveTo(program, "DONE", "system", "workflow-complete");
+    this.store.save(program);
+    return program;
+  }
+
+  diff(programId: string): string {
+    const program = this.mustGet(programId);
+    if (!program.gitBaseline) return "";
+    return diffAgainstBaseline(program.name, program.gitBaseline);
+  }
+
+  private mustGet(programId: string): Program {
+    const program = this.store.get(programId);
+    if (!program) throw new Error(`Program ${programId} not found`);
+    return program;
+  }
+}
