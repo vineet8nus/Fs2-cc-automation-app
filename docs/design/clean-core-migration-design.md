@@ -164,6 +164,18 @@ Sources: [ATC recommendations for clean-core governance](https://community.sap.c
 
 ---
 
+## 3a. Confirmed landscape details (as of 2026-07-18)
+
+| Item | Confirmed value | Design implication |
+|---|---|---|
+| Release | RISE with SAP, S/4HANA 2023 (private cloud) | Central ATC on S/4HANA (not "ATC on BTP") is the check system; confirm the 2023 release's clean-core check variant coverage matches what's needed — some clean-core checks only shipped from later support packages, worth a quick confirm with Basis. |
+| Connectivity | BTP destination `SHD200SYSTEM` (client 200), reached from BTP | This app calls the SAP system's ADT REST API **through this destination**, not via a direct network path — the destination's auth method (principal propagation, OAuth2SAMLBearerAssertion, or basic) determines what technical-user setup is needed. Confirm the destination's auth type before building the ADT client. |
+| ATC | Already configured centrally, in the dev client (client 200) | Analysis Agent can start against this immediately — no prerequisite setup blocking Phase 1. |
+| Test/sandbox | Dev system doubles as the test system (no separate sandbox) | Workable, but not isolated: automation runs will activate objects in a client other developers may be actively using. Mitigate with a **dedicated package/naming range reserved for automation-driven changes**, and treat "activate + test in dev" as a scoped, transport-tracked change — never a silent background activation. On RISE, provisioning/authorizing any new technical communication user for this typically goes through an SAP AMS ticket — plan lead time. |
+| Version control | Must snapshot code to Git **before** any change is made | Becomes the baseline/rollback point and the mechanism for human review (§6.6) — see the new Git Sync Agent below. |
+
+---
+
 ## 4. Proposed system architecture
 
 ```mermaid
@@ -178,6 +190,7 @@ flowchart TB
 
     subgraph App["Automation Backend (this app)"]
         ORCH[Orchestrator / Workflow Engine]
+        GITSYNC[Git Sync Agent]
         DISC[Discovery Agent]
         ANLZ[Clean Core Analysis Agent]
         BASE[Baseline Test Agent]
@@ -188,28 +201,38 @@ flowchart TB
         DB[(App DB: objects, findings,\nrisk scores, test results, audit log)]
     end
 
-    subgraph SAP["Target SAP Landscape"]
+    subgraph GIT["ABAP Mirror Git Repo"]
+        BASELINE[baseline branch\n(pre-change snapshot)]
+        PR[Fix branch + PR\n(proposed change + validation report)]
+    end
+
+    subgraph SAP["Target SAP Landscape (via BTP destination SHD200SYSTEM, client 200)"]
         ADT["ADT REST API\n(source read/write, syntax check,\nABAP Unit run, ATC run)"]
-        ATCSYS["Central ATC check system\n(ATC on BTP or central S/4HANA)"]
-        DEVSYS[(Dev/Sandbox system)]
+        ATCSYS["Central ATC check system\n(configured in dev client 200)"]
+        DEVSYS[(Dev client = test client)]
         TR[Transport Management]
     end
 
     U1 --> ORCH
+    ORCH --> GITSYNC --> ADT
+    GITSYNC --> BASELINE
     ORCH --> DISC --> ADT
     DISC --> DB
     ORCH --> ANLZ --> ATCSYS
     ANLZ --> DB
     ORCH --> BASE --> ADT
     BASE --> U4
-    U4 -->|approve| ORCH
-    ORCH --> REM --> ADT
-    REM --> DEVSYS
+    U4 -->|approve scope| ORCH
+    ORCH --> REM
+    REM --> PR
+    PR -->|apply for validation| DEVSYS
     ORCH --> VAL --> ATCSYS
     VAL --> ADT
-    VAL --> U4
-    U4 -->|approve fix| TR
+    VAL -->|post checks/results| PR
+    PR --> U4
+    U4 -->|approve PR merge| TR
     ORCH --> DOC --> U5
+    DOC -->|attach to PR| PR
     ORCH --> RETRO --> DB
     DB --> U2
     DB --> U3
@@ -219,14 +242,15 @@ flowchart TB
 
 | Agent | Input | Action | Output |
 |---|---|---|---|
+| **Git Sync Agent** | Program name from Excel | Runs **first, before any other agent touches the object**: pulls current source of the program + every dependent object (includes, classes, function groups, DDIC/CDS DDL) via ADT REST and commits it to a `baseline/<program>` branch in a dedicated ABAP mirror Git repo | Immutable pre-change snapshot = rollback point + diff basis |
 | **Discovery Agent** | Program name from Excel | Pulls object structure, includes, called function modules/classes, DDIC tables/CDS views used, where-used list, via ADT REST | Dependency graph per program |
 | **Clean Core Analysis Agent** | Dependency graph | Triggers central ATC run with clean-core check variant on the full object set; supplements with custom rule engine for org-specific rules | List of findings, each mapped to an extensibility level (A–D) and ATC priority |
 | **Baseline Test Agent** | Program + existing tests | Runs existing ABAP Unit tests if present; where missing/low-coverage, generates characterization tests (AI-assisted) capturing current behavior; **flags to human for confirmation these reflect intended behavior** | Baseline test suite + pass/fail snapshot ("golden master") |
 | **Human Gate 1 — Review** | Findings + risk scores + baseline tests | Developer reviews and approves/rejects/defers each finding or whole program | Approved remediation scope |
-| **Remediation Agent** | Approved findings | Applies fix: (a) native ADT quick fix where a stable, unambiguous mapping exists (e.g. released CDS-view successor), else (b) AI-generated fix constrained to released-API replacement only, never altering business logic | Modified source in dev/sandbox, fix rationale per change |
-| **Validation Agent** | Modified source | Syntax check → activate → confirm referenced objects (CDS fields, API signatures) actually exist and type-match → re-run ATC (finding cleared, no new findings) → re-run baseline + new tests → diff before/after behavior, including **side-effect checks** (change docs, number ranges, BAPI return messages) | Pass/fail validation report |
-| **Human Gate 2 — Final Approval** | Validation report + code diff | Developer approves merge to transport, or sends back for another remediation pass | Go/no-go |
-| **Reporting Agent** | All of the above | Generates tech spec doc (what/why/ATC rule/impact) + unit test report + risk register per program | PDF/Excel/Markdown deliverables |
+| **Remediation Agent** | Approved findings | Applies fix: (a) native ADT quick fix where a stable, unambiguous mapping exists (e.g. released CDS-view successor), else (b) AI-generated fix constrained to released-API replacement only, never altering business logic; commits the result to a `fix/<program>-<finding>` branch and opens a **PR** against the baseline branch | PR with proposed diff + fix rationale in the description |
+| **Validation Agent** | PR branch | Applies the branch content to the dev client via ADT write → syntax check → activate → confirm referenced objects (CDS fields, API signatures) actually exist and type-match → re-run ATC (finding cleared, no new findings) → re-run baseline + new tests → diff before/after behavior, including **side-effect checks** (change docs, number ranges, BAPI return messages) → posts results as **PR checks/comments** | Pass/fail validation report attached to the PR |
+| **Human Gate 2 — Final Approval** | The PR itself (diff + validation report as checks/comments) | Developer reviews and approves/merges the PR, or requests changes (sends back for another remediation pass) | Merged PR = approved change, ready for transport |
+| **Reporting Agent** | All of the above | Generates tech spec doc (what/why/ATC rule/impact) + unit test report + risk register per program; attaches to the merged PR | PDF/Excel/Markdown deliverables, linked from the PR |
 | **Process Retro Agent** | Run metrics across programs (time per stage, quick-fix vs AI-fix ratio, rejection rate, rollback rate, false-positive rate) | Aggregates and surfaces process-improvement recommendations | Dashboard + periodic advisory report (this directly answers your "validate this process and advise on improvements" requirement — build it as a standing agent, not a one-time exercise) |
 
 ---
@@ -234,14 +258,15 @@ flowchart TB
 ## 5. Per-program workflow / state machine
 
 ```
-UPLOADED → DISCOVERING → DISCOVERED → ANALYZING (ATC) → ANALYZED
+UPLOADED → GIT_BASELINED (Git Sync Agent snapshots pre-change source)
+   → DISCOVERING → DISCOVERED → ANALYZING (ATC) → ANALYZED
    → BASELINING_TESTS → AWAITING_HUMAN_REVIEW_1
       → (rejected/deferred) → PARKED
-      → (approved) → REMEDIATING → VALIDATING
+      → (approved) → REMEDIATING (PR opened) → VALIDATING (in dev/test client)
          → (validation failed) → REMEDIATING (retry, capped attempts) or ESCALATE_TO_HUMAN
-         → (validation passed) → AWAITING_HUMAN_REVIEW_2
-            → (rejected) → REMEDIATING (revise) or PARKED
-            → (approved) → TRANSPORT_RELEASED → DOCUMENTED → DONE
+         → (validation passed) → AWAITING_HUMAN_REVIEW_2 (PR review)
+            → (changes requested) → REMEDIATING (revise) or PARKED
+            → (PR approved+merged) → TRANSPORT_RELEASED → DOCUMENTED → DONE
 ```
 
 Every state transition is logged (who/when/why) — this audit trail *is* the
@@ -291,18 +316,45 @@ differently.
 
 ### 6.5 Where the app runs / connects
 This app is a **side-by-side automation tool**, not something installed
-inside the SAP system. It connects outward to:
-- A **central ATC check system** (ATC on BTP recommended by SAP) for clean-
-  core analysis.
-- The **ADT REST API** of the actual system(s) owning the custom code, for
-  source read, dependency discovery, syntax check, ABAP Unit run, and (where
-  viable) quick-fix application.
-- A **non-production/sandbox system** as the only place code changes are
-  activated and tested before a human ever approves a transport.
+inside the SAP system. For this landscape specifically, it connects outward
+to:
+- The **central ATC check system already configured in dev client 200** for
+  clean-core analysis — no separate BTP ATC setup needed.
+- The **ADT REST API**, reached through the BTP destination `SHD200SYSTEM`,
+  for source read, dependency discovery, syntax check, ABAP Unit run, and
+  (where viable) quick-fix application.
+- The **dev client itself**, since no separate sandbox exists — code changes
+  are activated and tested there before a human ever approves a transport,
+  scoped to a dedicated package/naming range to limit collision with other
+  developers actively working in the same client.
 
 Credentials should be split: a read-only technical communication user for
 Discovery/Analysis, and a separate, narrowly-scoped read-write user (used
-only after Human Gate 1 approval) for Remediation/Validation.
+only after Human Gate 1 approval) for Remediation/Validation. On RISE, both
+likely require an SAP AMS ticket to provision/authorize against the BTP
+destination — raise this early, it can otherwise block Phase 1.
+
+### 6.6 Git-first change flow (why this replaces the custom diff viewer)
+Because every change must be captured in Git *before* anything is touched,
+the Git Sync Agent's baseline commit becomes the single source of truth for
+"what did this program look like before," and the Remediation Agent's output
+becomes an ordinary pull request against it:
+
+- **Rollback is trivial**: reverting a bad fix in SAP means re-applying the
+  baseline commit via ADT write, not reconstructing state from memory.
+- **Human Gate 2 is a standard PR review**, not a bespoke UI — the app's
+  "diff viewer" from §4 is realized as the PR's file diff, with the
+  Validation Agent's ATC/test results posted as PR checks/comments rather
+  than a separate report screen. This also means existing PR tooling
+  (review, comment threads, approval requirements) can be reused instead of
+  built from scratch.
+- **Open decision**: should the ABAP mirror live in its own dedicated repo
+  (recommended — one Git history per SAP system/client, independent of this
+  app's own release cycle) or as a folder inside this `Fs2-cc-automation-app`
+  repo? Recommend a dedicated repo per target client (e.g.
+  `sap-shd200-abap-mirror`), created and owned by you, with this app reading/
+  writing to it via a scoped token — keeps the automation app's own codebase
+  separate from the customer ABAP snapshot it manages.
 
 ---
 
@@ -346,23 +398,29 @@ of:
 
 ## 9. Open questions before implementation starts
 
-These need your decision before coding begins — captured here so the design
-phase closes cleanly:
+Resolved: target landscape (RISE S/4HANA 2023, dev client 200, BTP
+destination `SHD200SYSTEM`), ATC readiness (already configured centrally in
+that client), and the requirement to Git-snapshot code before any change —
+see §3a and §6.6. Still outstanding:
 
-1. **Target SAP landscape type** — S/4HANA private cloud/on-premise (2023 or
-   2025), SAP BTP ABAP Environment, or both? This determines which ATC
-   integration path (central ATC on BTP vs. central S/4HANA ATC) and which
-   comm scenario (e.g. SAP_COM_0901-style) to build against.
-2. **Is "Analyze Custom Code" / central ATC already enabled** in a landscape
-   you can point this app at, or does that setup need to happen first (it's
-   a prerequisite, not something this app can configure for you)?
-3. **Do you have — or can you provision — a non-production ABAP system**
-   this app can use as the activate/test sandbox before anything reaches a
-   human for approval?
-4. **Fix-authoring source**: are you comfortable with Claude/an LLM
+1. **BTP destination auth type for `SHD200SYSTEM`** — basic auth, principal
+   propagation, or OAuth2SAMLBearerAssertion? Determines the technical-user
+   provisioning request to raise with SAP AMS, and whether this app can use
+   one shared technical user or needs per-developer identity flow-through.
+2. **Fix-authoring source**: are you comfortable with Claude/an LLM
    authoring the non-canned fixes (constrained + fully validated + human-
-   gated), or do you want v1 scoped to *only* the native ADT quick-fix
-   patterns (safer, narrower coverage) with AI-authored fixes as a v2?
+   gated via PR review), or do you want v1 scoped to *only* the native ADT
+   quick-fix patterns (safer, narrower coverage) with AI-authored fixes as a
+   v2? (Recommended: include AI-authored fixes in v1, since every fix — native
+   or AI — goes through the same Validation Agent + PR gate before merge, so
+   the extra coverage doesn't cost safety.)
+3. **ABAP mirror Git repo**: new dedicated repo (e.g.
+   `sap-shd200-abap-mirror`) as recommended in §6.6, or a folder inside this
+   repo? Who should own/host it — same GitHub org as this app?
+4. **Dedicated package/naming range** in client 200 to scope automation-driven
+   changes, so they're clearly distinguishable from manual developer work in
+   the same client — what naming convention does your team already use for
+   custom packages, so this can follow it rather than invent a new one?
 5. Any existing governance/risk-scoring policy at your org this should match,
    or is the weighting model in §6.3 a fine starting default?
 
