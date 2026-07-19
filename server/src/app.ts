@@ -6,6 +6,7 @@ import multer from "multer";
 import { Program } from "./domain/types";
 import { InMemoryProgramStore, ProgramStore } from "./store/store";
 import { createSapClient } from "./sap";
+import { RealAdtClient } from "./sap/RealAdtClient";
 import { Orchestrator } from "./orchestrator/orchestrator";
 import { parseIntakeExcel } from "./utils/excelParser";
 import { computeRetroMetrics } from "./agents/processRetroAgent";
@@ -89,6 +90,29 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
 
   app.get("/api/retro", (_req, res) => {
     res.json(computeRetroMetrics(store.list()));
+  });
+
+  // Isolated proof-of-connectivity route: always uses RealAdtClient against
+  // the real destination, independent of SAP_INTEGRATION_MODE — so it can
+  // be exercised without switching the main upload/analysis pipeline (still
+  // mock-only until far more of RealAdtClient is built out and a dedicated
+  // technical user replaces the current personal-user credential) into real
+  // mode. Read-only: calls readObjectSource only, nothing else.
+  app.get("/api/diagnostics/sap-source/:programName", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    try {
+      const result = await new RealAdtClient(destinationName).readObjectSource(req.params.programName);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; cause?: { message?: string } };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        cause: e.cause?.message,
+      });
+    }
   });
 
   // Serve the built frontend (see scripts/copy-frontend.js) if present —

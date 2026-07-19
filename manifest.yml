@@ -10,4 +10,8 @@ applications:
     command: npm start
     env:
       SAP_INTEGRATION_MODE: mock
+      SAP_DESTINATION_NAME: SHD200SYSTEM
       NODE_ENV: production
+    services:
+      - fs2-cc-automation-destination
+      - fs2-cc-automation-connectivity
