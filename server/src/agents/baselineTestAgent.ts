@@ -24,11 +24,15 @@ export async function runBaselineTests(programName: string, sap: SapClient): Pro
 
   const MIN_COVERAGE = 3;
   if (cases.length < MIN_COVERAGE) {
+    // Honest placeholder: nothing has actually been generated or executed
+    // yet, so this is NOT marked "pass" — that would claim a result no
+    // agent produced. Real characterization-test generation/execution is a
+    // documented next step, not implemented here.
     cases.push({
       id: uuidv4(),
       name: `test_characterization_${programName.toLowerCase()}_current_behavior`,
       kind: "generated_characterization",
-      status: "pass",
+      status: "not_run",
       humanConfirmed: false,
     });
   }

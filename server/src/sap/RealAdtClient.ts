@@ -1,6 +1,7 @@
 import { executeHttpRequest } from "@sap-cloud-sdk/http-client";
 import { DependencyObject } from "../domain/types";
 import { AtcRawFinding, ObjectSource, SapClient, UnitTestCaseResult } from "./SapClient";
+import { extractDependencies, runStaticAtcRules } from "./staticCleanCoreRules";
 
 /**
  * Real connectivity to SHD200SYSTEM (RISE S/4HANA 2023, client 200) over the
@@ -9,16 +10,20 @@ import { AtcRawFinding, ObjectSource, SapClient, UnitTestCaseResult } from "./Sa
  * BasicAuthentication against a named user, routed through Cloud Connector
  * location "Training-BC-Dev").
  *
- * Status: only `readObjectSource` is implemented, as a read-only proof of
- * connectivity (see the /api/diagnostics/sap-source route). Every other
- * method still fails loudly rather than silently returning mock data —
- * deliberately unimplemented until:
- *   1. A dedicated technical/communication user replaces the current
- *      personal-user (named `VINEET`) Basic Auth credential for anything
- *      beyond manual read-only testing — see §6.5's read-only-vs-write
- *      scoping rationale, which applies doubly to a named personal login.
- *   2. Dependency discovery, ATC run, ABAP Unit run, and write/activate are
- *      each built out against the real ADT REST surface.
+ * Status: read path is implemented — readObjectSource (live ADT source
+ * read), getDependencies (static-text extraction, not a full ADT
+ * where-used call), runAtcCheck (a static rule engine standing in for real
+ * ATC — see staticCleanCoreRules.ts), and runAbapUnit (honestly returns no
+ * cases rather than fabricating results, since real ABAP Unit execution
+ * isn't wired up). This is enough for the full read-only pipeline —
+ * discovery, analysis, baseline capture — to run against real programs.
+ *
+ * The write path (syntaxCheckAndActivate, objectExists, and by extension
+ * any real remediation) is still deliberately unimplemented, and should
+ * stay that way until a dedicated technical/communication user replaces
+ * the current personal-user (named `VINEET`) Basic Auth credential — see
+ * §6.5's read-only-vs-write scoping rationale, which applies doubly to a
+ * named personal login being driven by automation.
  */
 export class RealAdtClient implements SapClient {
   constructor(private readonly destinationName: string) {}
@@ -44,16 +49,32 @@ export class RealAdtClient implements SapClient {
     return { name: programName, type: "PROG", source: String(response.data) };
   }
 
-  async getDependencies(_programName: string): Promise<DependencyObject[]> {
-    this.notConfigured("getDependencies");
+  async getDependencies(programName: string): Promise<DependencyObject[]> {
+    const source = await this.readObjectSource(programName);
+    return extractDependencies(source.source);
   }
 
-  async runAtcCheck(_objectNames: string[], _currentSource: string): Promise<AtcRawFinding[]> {
-    this.notConfigured("runAtcCheck");
+  /**
+   * Real ATC on SAP BTP / central S/4HANA (`/atc/runs`-style endpoints,
+   * worklist XML) isn't wired up yet — this runs the static rule engine
+   * (see staticCleanCoreRules.ts) against the real source instead, so real
+   * programs get real findings now rather than waiting on the full ATC
+   * integration. `_objectNames` is accepted for interface parity with the
+   * mock client but isn't needed by the static engine.
+   */
+  async runAtcCheck(_objectNames: string[], currentSource: string): Promise<AtcRawFinding[]> {
+    return runStaticAtcRules(currentSource);
   }
 
+  /**
+   * Real ADT Unit Test execution (`/sap/bc/adt/abapunit/testruns`) isn't
+   * wired up yet. Returning no cases (rather than throwing) is the honest
+   * answer — "nothing has actually been run" — and lets
+   * baselineTestAgent's existing not-yet-verified placeholder do its job
+   * instead of crashing real-mode discovery over an unimplemented method.
+   */
   async runAbapUnit(_programName: string): Promise<UnitTestCaseResult[]> {
-    this.notConfigured("runAbapUnit");
+    return [];
   }
 
   async syntaxCheckAndActivate(

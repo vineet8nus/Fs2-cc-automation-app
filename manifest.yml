@@ -9,7 +9,7 @@ applications:
     path: deploy
     command: npm start
     env:
-      SAP_INTEGRATION_MODE: mock
+      SAP_INTEGRATION_MODE: real
       SAP_DESTINATION_NAME: SHD200SYSTEM
       NODE_ENV: production
     services:
