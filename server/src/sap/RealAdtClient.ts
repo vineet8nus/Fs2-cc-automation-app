@@ -77,6 +77,81 @@ export class RealAdtClient implements SapClient {
     return [];
   }
 
+  /**
+   * Experimental: triggers a real ATC run via the standard create-worklist
+   * -> run -> poll-worklist flow, against the system's actual configured
+   * check variant (ZNUS_SCI_DEF_CENTRAL on SHD200SYSTEM, discovered via
+   * /sap/bc/adt/atc/customizing). Not yet part of the SapClient interface —
+   * this is a diagnostic/proving step (see /api/diagnostics/atc-trigger)
+   * while the exact request/response shapes get nailed down against the
+   * real system. Doesn't modify any ABAP object; safe to run repeatedly.
+   */
+  async triggerAtcRun(objectUri: string, checkVariant: string): Promise<{ worklistId: string; runResponse: unknown; worklistXml: string }> {
+    // Manual CSRF handshake: fetch a token + session cookie from a stable
+    // GET-able endpoint first, then carry both explicitly on every
+    // subsequent call. The SDK's automatic fetchCsrfToken didn't produce a
+    // usable token for the worklist endpoint (it 403'd), most likely
+    // because that collection doesn't respond cleanly to a plain GET for
+    // the SDK's own implicit token-fetch request — doing it explicitly
+    // against a URL known to always 200 sidesteps that.
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch" } },
+      { fetchCsrfToken: false }
+    );
+    const csrfToken = tokenFetch.headers?.["x-csrf-token"];
+    const setCookie: string[] | undefined = tokenFetch.headers?.["set-cookie"];
+    const cookieHeader = setCookie?.map((c) => c.split(";")[0]).join("; ");
+    const session: Record<string, string> = {};
+    if (csrfToken) session["X-CSRF-Token"] = csrfToken;
+    if (cookieHeader) session["Cookie"] = cookieHeader;
+
+    const createWorklist = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "post",
+        url: `/sap/bc/adt/atc/worklists?checkVariant=${encodeURIComponent(checkVariant)}`,
+        headers: { Accept: "text/plain", ...session },
+      },
+      { fetchCsrfToken: false }
+    );
+    const worklistId = String(createWorklist.data).trim();
+
+    const runBody = `<?xml version="1.0" encoding="UTF-8"?>
+<atc:run xmlns:atc="http://www.sap.com/adt/atc" xmlns:adtcore="http://www.sap.com/adt/core" maximumVerdicts="100">
+  <objectSets>
+    <objectSet kind="inclusive">
+      <adtcore:objectReferences>
+        <adtcore:objectReference adtcore:uri="${objectUri}"/>
+      </adtcore:objectReferences>
+    </objectSet>
+  </objectSets>
+</atc:run>`;
+
+    const runResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "post",
+        url: `/sap/bc/adt/atc/runs?worklistId=${encodeURIComponent(worklistId)}`,
+        data: runBody,
+        headers: { "Content-Type": "application/vnd.sap.atc.run.request.v1+xml", Accept: "application/xml", ...session },
+      },
+      { fetchCsrfToken: false }
+    );
+
+    const worklist = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "get",
+        url: `/sap/bc/adt/atc/worklists/${encodeURIComponent(worklistId)}?includeExemptedFindings=false`,
+        headers: { Accept: "application/xml", ...session },
+      },
+      { fetchCsrfToken: false }
+    );
+
+    return { worklistId, runResponse: runResponse.data, worklistXml: String(worklist.data) };
+  }
+
   async syntaxCheckAndActivate(
     _objectName: string,
     _source: string

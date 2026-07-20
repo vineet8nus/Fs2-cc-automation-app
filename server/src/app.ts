@@ -1,3 +1,4 @@
+import { executeHttpRequest } from "@sap-cloud-sdk/http-client";
 import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
 import fs from "node:fs";
@@ -107,6 +108,66 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
       const e = err as { message?: string; response?: { status?: number; data?: unknown }; cause?: { message?: string } };
       res.status(502).json({
         destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        cause: e.cause?.message,
+      });
+    }
+  });
+
+  // Generic, GET-only ADT REST explorer — deliberately read-only (no
+  // method param, always GET) so it can be used to discover real endpoint
+  // shapes (e.g. the ADT discovery document, ATC check variants) against
+  // SHD200SYSTEM without risking a write. Not a general-purpose proxy.
+  app.get("/api/diagnostics/adt-raw", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const path = String(req.query.path ?? "");
+    if (!path.startsWith("/sap/bc/adt")) {
+      return res.status(400).json({ error: "path must start with /sap/bc/adt" });
+    }
+    try {
+      const response = await executeHttpRequest(
+        { destinationName },
+        { method: "get", url: path, headers: { Accept: "application/xml, text/plain, */*" } },
+        { fetchCsrfToken: false }
+      );
+      res.type("text/plain").send(typeof response.data === "string" ? response.data : JSON.stringify(response.data));
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; cause?: { message?: string } };
+      res.status(502).json({
+        destinationName,
+        path,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        cause: e.cause?.message,
+      });
+    }
+  });
+
+  // Experimental real-ATC trigger, isolated from the main pipeline while
+  // the request/response shape gets proven against SHD200SYSTEM. Doesn't
+  // modify any ABAP object — creates a worklist, runs the check, polls the
+  // result. See RealAdtClient.triggerAtcRun.
+  app.get("/api/diagnostics/atc-trigger/:programName", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const checkVariant = String(req.query.checkVariant ?? "ZNUS_SCI_DEF_CENTRAL");
+    const objectUri = `/sap/bc/adt/programs/programs/${encodeURIComponent(req.params.programName.toLowerCase())}`;
+    try {
+      const result = await new RealAdtClient(destinationName).triggerAtcRun(objectUri, checkVariant);
+      res.json({ destinationName, checkVariant, objectUri, ...result });
+    } catch (err) {
+      const e = err as {
+        message?: string;
+        response?: { status?: number; data?: unknown; config?: { url?: string; method?: string } };
+        cause?: { message?: string };
+      };
+      res.status(502).json({
+        destinationName,
+        checkVariant,
+        objectUri,
+        failedStep: e.response?.config ? `${e.response.config.method ?? "?"} ${e.response.config.url ?? "?"}` : undefined,
         error: e.message ?? String(err),
         httpStatus: e.response?.status,
         responseBody: e.response?.data,
