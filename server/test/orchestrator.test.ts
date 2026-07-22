@@ -71,6 +71,28 @@ describe("orchestrator verifies replacement objects before proposing a fix", () 
   });
 });
 
+describe("orchestrator flags findings that have no mechanical fix behind them", () => {
+  it("marks an approved finding as deferred (not silently left approved) when remediation can't apply anything for it", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new MockSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZNOFIXTEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    // The mock's "Missing ORDER BY" finding has fixOrigin "none" — there is
+    // no automated fix for it, by design.
+    const noFixFinding = program.findings.find((f) => f.checkName === "Missing ORDER BY");
+    expect(noFixFinding).toBeDefined();
+
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
+
+    expect(proposed.state).toBe("AWAITING_FIX_REVIEW");
+    const updated = proposed.findings.find((f) => f.id === noFixFinding!.id);
+    expect(updated?.status).toBe("deferred");
+    expect(proposed.auditLog.some((a) => a.action === "no-automated-fix")).toBe(true);
+  });
+});
+
 describe("orchestrator guards unsupported object types in real mode", () => {
   it("parks a non-PROGRAM object without touching SAP when SAP_INTEGRATION_MODE=real", async () => {
     const prior = process.env.SAP_INTEGRATION_MODE;

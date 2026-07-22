@@ -202,6 +202,7 @@ export function ProgramDetailPage() {
                         This object has already been ingested. Discovery and analysis run automatically — move to the
                         next step to review the ATC findings.
                       </Text>
+                      <Bar endContent={<Button onClick={() => navigate("/")}>Cancel</Button>} />
                     </div>
                   </Panel>
                 )}
@@ -325,6 +326,7 @@ export function ProgramDetailPage() {
                           <Label>Comment</Label>
                           <TextArea value={comment} onInput={(e) => setComment(e.target.value)} rows={2} />
                           <Bar
+                            startContent={<Button onClick={() => navigate("/")}>Cancel</Button>}
                             endContent={
                               <FlexBox style={{ gap: "0.5rem" }}>
                                 <Button
@@ -339,7 +341,7 @@ export function ProgramDetailPage() {
                                   disabled={busy || selected.size === 0}
                                   onClick={() => runAction(() => api.gate1(program.id, "approve", Array.from(selected), comment))}
                                 >
-                                  Approve {selected.size} finding(s) &amp; remediate
+                                  Review Fixed Code and Remediate
                                 </Button>
                               </FlexBox>
                             }
@@ -360,6 +362,18 @@ export function ProgramDetailPage() {
                             the destination's configured user). Review the proposed fix below — it's editable —
                             before approving.
                           </MessageStrip>
+                          {program.findings.some((f) => f.status === "deferred") && (
+                            <MessageStrip design="Information">
+                              {program.findings.filter((f) => f.status === "deferred").length} approved finding(s) have
+                              no automated fix behind them and are unchanged in the proposed source below — they need
+                              manual remediation, separately from this write:{" "}
+                              {program.findings
+                                .filter((f) => f.status === "deferred")
+                                .map((f) => `${f.checkName} (${f.objectName})`)
+                                .join("; ")}
+                              .
+                            </MessageStrip>
+                          )}
                           <FlexBox style={{ gap: "1rem" }}>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <Label>Diff (baseline → proposed) — red removed, green added</Label>

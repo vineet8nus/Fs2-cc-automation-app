@@ -178,6 +178,26 @@ export class Orchestrator {
       const f = program.findings.find((x) => x.id === id);
       if (f) f.status = "fixed";
     }
+    // A finding can be approved yet still have no mechanical fix behind it —
+    // e.g. an ai_generated suggestion with no known replacementObject (no
+    // CDS/BAPI mapping was identified), or an origin of "none" (manual-only,
+    // like SELECT-inside-LOOP). Leaving these as "approved" looked, in the
+    // UI, like the fix had been handled even though the proposed source is
+    // byte-identical for that finding — flag it as "deferred" with a reason
+    // instead of silently doing nothing.
+    for (const id of remediation.skippedFindingIds) {
+      const f = program.findings.find((x) => x.id === id);
+      if (!f) continue;
+      f.status = "deferred";
+      audit(
+        program,
+        "RemediationAgent",
+        "no-automated-fix",
+        undefined,
+        undefined,
+        `${f.checkName} (${f.objectName}): no automated fix available for this finding — needs manual remediation.`
+      );
+    }
     program.remediationAttempts += 1;
     program.proposedSource = remediation.newSource;
 
