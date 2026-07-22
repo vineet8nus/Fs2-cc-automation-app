@@ -76,6 +76,19 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  app.post("/api/programs/:id/fix-review", async (req, res, next) => {
+    try {
+      const { decision, editedSource, comment } = req.body ?? {};
+      if (!["approve", "request_changes", "reject"].includes(decision)) {
+        return res.status(400).json({ error: "decision must be approve | request_changes | reject" });
+      }
+      const program = await orchestrator.fixReviewDecision(req.params.id, decision, editedSource, comment);
+      res.json(program);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post("/api/programs/:id/gate2", async (req, res, next) => {
     try {
       const { decision, comment } = req.body ?? {};

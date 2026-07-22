@@ -10,6 +10,7 @@ export type WorkflowState =
   | "AWAITING_HUMAN_REVIEW_1"
   | "PARKED"
   | "REMEDIATING"
+  | "AWAITING_FIX_REVIEW"
   | "VALIDATING"
   | "ESCALATED"
   | "AWAITING_HUMAN_REVIEW_2"
@@ -141,6 +142,15 @@ export interface Program {
   riskScore?: RiskScoreBreakdown;
   baselineTests?: TestRunResult;
   gitBaseline?: GitBaseline;
+  /** Original source as discovered, kept alongside proposedSource for a direct side-by-side compare in the UI. */
+  baselineSource?: string;
+  /**
+   * The remediation agent's proposed fixed source, awaiting human review at
+   * AWAITING_FIX_REVIEW. Editable by the approver before the write path
+   * (syntaxCheckAndActivate) runs against it — see orchestrator's
+   * fixReviewDecision.
+   */
+  proposedSource?: string;
   validationReport?: ValidationReport;
   report?: TechSpecReport;
   remediationAttempts: number;

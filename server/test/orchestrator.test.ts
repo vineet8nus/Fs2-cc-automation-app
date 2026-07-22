@@ -25,7 +25,10 @@ describe("orchestrator resilience to unimplemented SapClient methods", () => {
     ]);
     expect(program.state).toBe("AWAITING_HUMAN_REVIEW_1");
 
-    const result = await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
+    expect(proposed.state).toBe("AWAITING_FIX_REVIEW");
+
+    const result = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "approve write");
 
     expect(result.state).toBe("ESCALATED");
     expect(result.state).not.toBe("VALIDATING");

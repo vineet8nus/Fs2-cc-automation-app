@@ -9,7 +9,10 @@ export const ALLOWED_TRANSITIONS: Record<WorkflowState, WorkflowState[]> = {
   BASELINING_TESTS: ["AWAITING_HUMAN_REVIEW_1"],
   AWAITING_HUMAN_REVIEW_1: ["PARKED", "REMEDIATING"],
   PARKED: ["REMEDIATING"], // a parked program can be revisited later
-  REMEDIATING: ["VALIDATING"],
+  // REMEDIATING always produces a proposal for human review before any
+  // write happens — it never goes straight to VALIDATING.
+  REMEDIATING: ["AWAITING_FIX_REVIEW"],
+  AWAITING_FIX_REVIEW: ["VALIDATING", "REMEDIATING", "PARKED"],
   VALIDATING: ["REMEDIATING", "ESCALATED", "AWAITING_HUMAN_REVIEW_2"],
   ESCALATED: ["REMEDIATING", "PARKED"],
   AWAITING_HUMAN_REVIEW_2: ["REMEDIATING", "PARKED", "TRANSPORT_RELEASED"],

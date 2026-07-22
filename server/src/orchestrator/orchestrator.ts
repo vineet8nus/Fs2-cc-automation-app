@@ -70,6 +70,7 @@ export class Orchestrator {
     moveTo(program, "GIT_BASELINED", "GitSyncAgent", "baseline-snapshot", `commit ${program.gitBaseline.baselineCommit.slice(0, 10)}`);
     this.store.save(program);
 
+    program.baselineSource = discovery.programSource.source;
     program.dependencies = discovery.dependencies;
     moveTo(program, "DISCOVERED", "DiscoveryAgent", "dependency-graph-built", `${discovery.dependencies.length} dependent objects`);
     this.store.save(program);
@@ -118,16 +119,17 @@ export class Orchestrator {
     moveTo(program, "REMEDIATING", "human:gate1", "gate1-approve", comment ?? `${idsToApprove.size} finding(s) approved for remediation`);
     this.store.save(program);
 
-    return this.remediateAndValidate(program);
+    return this.proposeRemediation(program);
   }
 
   /**
-   * Phases 6-7: apply fixes for approved findings, open a PR, validate, and
-   * (on pass) present for Gate 2. `sourceOverride` carries the previous
-   * attempt's fixed source into a retry so a failed validation doesn't
-   * silently discard fixes already applied by an earlier attempt.
+   * Phase 6: apply fixes for approved findings, commit a fix branch/PR, and
+   * stop — no write against the real system happens here. `sourceOverride`
+   * carries a previous attempt's (possibly human-edited) source into a
+   * retry so it builds on top of prior fixes rather than starting over
+   * from pristine source.
    */
-  private async remediateAndValidate(program: Program, sourceOverride?: string): Promise<Program> {
+  private async proposeRemediation(program: Program, sourceOverride?: string): Promise<Program> {
     const approved = program.findings.filter((f) => f.status === "approved");
     const baseSource = sourceOverride ?? (await this.sap.readObjectSource(program.name)).source;
     const remediation = runRemediation(baseSource, approved);
@@ -137,6 +139,7 @@ export class Orchestrator {
       if (f) f.status = "fixed";
     }
     program.remediationAttempts += 1;
+    program.proposedSource = remediation.newSource;
 
     if (!program.gitBaseline) throw new Error("Program has no git baseline to commit remediation against.");
     program.gitBaseline = commitRemediation(
@@ -145,16 +148,65 @@ export class Orchestrator {
       remediation.newSource,
       remediation.changeLog.join("; ") || "no automated changes applied"
     );
-    moveTo(program, "VALIDATING", "RemediationAgent", "fix-branch-pr-opened", `PR ${program.gitBaseline.prUrl}`);
+    moveTo(program, "AWAITING_FIX_REVIEW", "RemediationAgent", "fix-proposed", `PR ${program.gitBaseline.prUrl}`);
     this.store.save(program);
+    return program;
+  }
 
+  /**
+   * Human fix-review gate: the developer sees the proposed fix (editable)
+   * alongside the original source before anything is written to the real
+   * system. Approving is the only path that triggers the real write
+   * (syntaxCheckAndActivate, inside runValidation) — reject parks the
+   * program, request_changes regenerates a fresh proposal for review again.
+   */
+  async fixReviewDecision(
+    programId: string,
+    decision: "approve" | "request_changes" | "reject",
+    editedSource: string | undefined,
+    comment: string | undefined
+  ): Promise<Program> {
+    const program = this.mustGet(programId);
+    if (program.state !== "AWAITING_FIX_REVIEW") {
+      throw new Error(`Program is in state ${program.state}, not awaiting fix review.`);
+    }
+
+    if (decision === "reject") {
+      for (const f of program.findings.filter((x) => x.status === "fixed")) f.status = "approved";
+      moveTo(program, "PARKED", "human:fix-review", "fix-review-reject", comment);
+      this.store.save(program);
+      return program;
+    }
+
+    if (decision === "request_changes") {
+      for (const f of program.findings.filter((x) => x.status === "fixed")) f.status = "approved";
+      moveTo(program, "REMEDIATING", "human:fix-review", "fix-review-request-changes", comment);
+      this.store.save(program);
+      return this.proposeRemediation(program);
+    }
+
+    // approve — this is the only path that writes to the real system.
+    const finalSource = editedSource ?? program.proposedSource;
+    if (!finalSource) throw new Error("No proposed source available to approve.");
+    if (editedSource && editedSource !== program.proposedSource) {
+      program.proposedSource = editedSource;
+      if (!program.gitBaseline) throw new Error("Missing git baseline.");
+      program.gitBaseline = commitRemediation(program.name, program.gitBaseline, editedSource, "human-edited fix before write approval");
+    }
+    moveTo(program, "VALIDATING", "human:fix-review", "fix-review-approve-write", comment);
+    this.store.save(program);
+    return this.validateAndFinish(program, finalSource);
+  }
+
+  /** Phase 7: the real write (via runValidation -> syntaxCheckAndActivate) plus the rest of the validation checklist. */
+  private async validateAndFinish(program: Program, finalSource: string): Promise<Program> {
     const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
     const fixedFindings = program.findings.filter((f) => f.status === "fixed");
     try {
       program.validationReport = await runValidation(
         program.name,
         objectNames,
-        remediation.newSource,
+        finalSource,
         fixedFindings,
         program.findings,
         program.baselineTests ?? { runAt: new Date().toISOString(), cases: [] },
@@ -186,7 +238,7 @@ export class Orchestrator {
 
     moveTo(program, "REMEDIATING", "ValidationAgent", "validation-failed-retry", program.validationReport.messages.join("; "));
     this.store.save(program);
-    return this.remediateAndValidate(program, remediation.newSource);
+    return this.proposeRemediation(program, finalSource);
   }
 
   /** Human Gate 2: standard PR review — approve/merge, or request changes. */
@@ -202,7 +254,7 @@ export class Orchestrator {
       for (const f of program.findings.filter((x) => x.status === "validated")) f.status = "approved";
       moveTo(program, "REMEDIATING", "human:gate2", "gate2-request-changes", comment);
       this.store.save(program);
-      return this.remediateAndValidate(program);
+      return this.proposeRemediation(program);
     }
 
     if (program.gitBaseline) program.gitBaseline.prState = "merged";

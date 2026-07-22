@@ -4,26 +4,62 @@ import { AtcRawFinding, ObjectSource, SapClient, UnitTestCaseResult } from "./Sa
 import { extractDependencies, runStaticAtcRules } from "./staticCleanCoreRules";
 
 /**
+ * Accumulates cookies and the CSRF token across an entire multi-request
+ * flow, since a single upfront capture isn't enough: the LOCK call itself
+ * sets an additional session-affinity cookie that must be picked up from
+ * *that* response and carried forward into the write/unlock/activate calls
+ * that follow, or they risk landing in a different backend session.
+ */
+class SapSession {
+  private cookies = new Map<string, string>();
+  private csrfToken?: string;
+
+  absorb(headers: Record<string, unknown> | undefined) {
+    const setCookie = headers?.["set-cookie"] as string[] | undefined;
+    for (const c of setCookie ?? []) {
+      const pair = c.split(";")[0];
+      const eq = pair.indexOf("=");
+      if (eq > 0) this.cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+    const token = headers?.["x-csrf-token"] as string | undefined;
+    if (token && token.toLowerCase() !== "required") this.csrfToken = token;
+  }
+
+  headers(stateful = false): Record<string, string> {
+    const h: Record<string, string> = {};
+    if (this.cookies.size > 0) h["Cookie"] = Array.from(this.cookies.entries()).map(([k, v]) => `${k}=${v}`).join("; ");
+    if (this.csrfToken) h["X-CSRF-Token"] = this.csrfToken;
+    if (stateful) h["X-sap-adt-sessiontype"] = "stateful";
+    return h;
+  }
+}
+
+/**
  * Real connectivity to SHD200SYSTEM (RISE S/4HANA 2023, client 200) over the
  * ADT REST API, via the BTP destination + Cloud Connector on-premise proxy
  * (confirmed live per docs/design/clean-core-migration-design.md §3a/§9 —
  * BasicAuthentication against a named user, routed through Cloud Connector
  * location "Training-BC-Dev").
  *
- * Status: read path is implemented — readObjectSource (live ADT source
- * read), getDependencies (static-text extraction, not a full ADT
- * where-used call), runAtcCheck (a static rule engine standing in for real
- * ATC — see staticCleanCoreRules.ts), and runAbapUnit (honestly returns no
- * cases rather than fabricating results, since real ABAP Unit execution
- * isn't wired up). This is enough for the full read-only pipeline —
- * discovery, analysis, baseline capture — to run against real programs.
+ * Status: read path — readObjectSource (live ADT source read),
+ * getDependencies (static-text extraction, not a full ADT where-used
+ * call), runAtcCheck (a static rule engine standing in for real ATC — see
+ * staticCleanCoreRules.ts), and runAbapUnit (honestly returns no cases
+ * rather than fabricating results, since real ABAP Unit execution isn't
+ * wired up).
  *
- * The write path (syntaxCheckAndActivate, objectExists, and by extension
- * any real remediation) is still deliberately unimplemented, and should
- * stay that way until a dedicated technical/communication user replaces
- * the current personal-user (named `VINEET`) Basic Auth credential — see
- * §6.5's read-only-vs-write scoping rationale, which applies doubly to a
- * named personal login being driven by automation.
+ * Write path — syntaxCheckAndActivate is implemented and live-tested
+ * against SHD200SYSTEM: lock -> write source -> unlock -> activate (in
+ * that order — activating while still holding the edit lock fails with an
+ * ENQUEUE self-conflict, "User X is currently editing", even under the
+ * identical session). Every write is attributed to whichever user the
+ * destination's stored credential resolves to (currently the named
+ * personal user `VINEET` on SHD200SYSTEM) — see §6.5's read-only-vs-write
+ * scoping rationale for why a dedicated technical/communication user
+ * should eventually replace that for anything beyond this app's current
+ * human-gated, single-approver use.
+ *
+ * objectExists is still an explicit unimplemented stub.
  */
 export class RealAdtClient implements SapClient {
   constructor(private readonly destinationName: string) {}
@@ -87,34 +123,22 @@ export class RealAdtClient implements SapClient {
    * real system. Doesn't modify any ABAP object; safe to run repeatedly.
    */
   async triggerAtcRun(objectUri: string, checkVariant: string): Promise<{ worklistId: string; runResponse: unknown; worklistXml: string }> {
-    // Manual CSRF handshake: fetch a token + session cookie from a stable
-    // GET-able endpoint first, then carry both explicitly on every
-    // subsequent call. The SDK's automatic fetchCsrfToken didn't produce a
-    // usable token for the worklist endpoint (it 403'd), most likely
-    // because that collection doesn't respond cleanly to a plain GET for
-    // the SDK's own implicit token-fetch request — doing it explicitly
-    // against a URL known to always 200 sidesteps that.
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+
     const tokenFetch = await executeHttpRequest(
       { destinationName: this.destinationName },
       { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch" } },
-      { fetchCsrfToken: false }
+      opts
     );
-    const csrfToken = tokenFetch.headers?.["x-csrf-token"];
-    const setCookie: string[] | undefined = tokenFetch.headers?.["set-cookie"];
-    const cookieHeader = setCookie?.map((c) => c.split(";")[0]).join("; ");
-    const session: Record<string, string> = {};
-    if (csrfToken) session["X-CSRF-Token"] = csrfToken;
-    if (cookieHeader) session["Cookie"] = cookieHeader;
+    session.absorb(tokenFetch.headers);
 
     const createWorklist = await executeHttpRequest(
       { destinationName: this.destinationName },
-      {
-        method: "post",
-        url: `/sap/bc/adt/atc/worklists?checkVariant=${encodeURIComponent(checkVariant)}`,
-        headers: { Accept: "text/plain", ...session },
-      },
-      { fetchCsrfToken: false }
+      { method: "post", url: `/sap/bc/adt/atc/worklists?checkVariant=${encodeURIComponent(checkVariant)}`, headers: { Accept: "text/plain", ...session.headers() } },
+      opts
     );
+    session.absorb(createWorklist.headers);
     const worklistId = String(createWorklist.data).trim();
 
     const runBody = `<?xml version="1.0" encoding="UTF-8"?>
@@ -134,32 +158,160 @@ export class RealAdtClient implements SapClient {
         method: "post",
         url: `/sap/bc/adt/atc/runs?worklistId=${encodeURIComponent(worklistId)}`,
         data: runBody,
-        headers: { "Content-Type": "application/vnd.sap.atc.run.request.v1+xml", Accept: "application/xml", ...session },
+        headers: { "Content-Type": "application/vnd.sap.atc.run.request.v1+xml", Accept: "application/xml", ...session.headers() },
       },
-      { fetchCsrfToken: false }
+      opts
     );
+    session.absorb(runResponse.headers);
 
     const worklist = await executeHttpRequest(
       { destinationName: this.destinationName },
       {
         method: "get",
         url: `/sap/bc/adt/atc/worklists/${encodeURIComponent(worklistId)}?includeExemptedFindings=false`,
-        headers: { Accept: "application/xml", ...session },
+        headers: { Accept: "application/xml", ...session.headers() },
       },
-      { fetchCsrfToken: false }
+      opts
     );
 
     return { worklistId, runResponse: runResponse.data, worklistXml: String(worklist.data) };
   }
 
+  /**
+   * The real write path: lock -> write source -> unlock -> activate, the
+   * same sequence Eclipse ADT performs on save+activate. Attributed to
+   * whichever user the destination's stored credential resolves to
+   * (currently the named personal user configured on SHD200SYSTEM — see
+   * the class doc). The lock is always released in a `finally`, even if
+   * writing the source or activation throws, so a failed attempt doesn't
+   * leave the object locked for the next one.
+   */
   async syntaxCheckAndActivate(
-    _objectName: string,
-    _source: string
+    objectName: string,
+    source: string
   ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {
-    this.notConfigured("syntaxCheckAndActivate");
+    const encodedName = encodeURIComponent(objectName.toLowerCase());
+    const objectUri = `/sap/bc/adt/programs/programs/${encodedName}`;
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const lockResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "post",
+        url: `${objectUri}?_action=LOCK&accessMode=MODIFY`,
+        headers: { Accept: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result2", ...session.headers(true) },
+      },
+      opts
+    );
+    session.absorb(lockResponse.headers); // critical: LOCK sets the session-affinity cookie the rest of this flow depends on
+    const lockHandleMatch = String(lockResponse.data).match(/<LOCK_HANDLE>([^<]*)<\/LOCK_HANDLE>/);
+    const lockHandle = lockHandleMatch?.[1];
+    if (!lockHandle) {
+      messages.push(`Could not acquire a lock handle: ${String(lockResponse.data).slice(0, 300)}`);
+      return { syntaxOk: false, activated: false, messages };
+    }
+    messages.push(`Locked ${objectName} (handle acquired).`);
+
+    try {
+      const writeResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "put",
+          url: `${objectUri}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
+          data: source,
+          headers: { "Content-Type": "text/plain; charset=utf-8", ...session.headers(true) },
+        },
+        opts
+      );
+      session.absorb(writeResponse.headers);
+      messages.push("Source written (inactive version).");
+    } catch (err) {
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      // Still attempt to release the lock below before rethrowing.
+      await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "post", url: `${objectUri}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`, headers: { ...session.headers(true) } },
+        opts
+      ).catch(() => undefined);
+      throw err;
+    }
+
+    // Unlock BEFORE activating — a live test against SHD200SYSTEM showed
+    // activation failing with "User X is currently editing" (an ENQUEUE
+    // self-conflict) while the edit-lock was still held from the write
+    // step, even carrying the identical session cookies. Releasing the
+    // lock first (activation operates on the already-saved inactive
+    // version, independent of any edit lock) resolved it.
+    const unlockResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "post", url: `${objectUri}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`, headers: { ...session.headers(true) } },
+      opts
+    ).catch((err) => {
+      messages.push(`Warning: unlock failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (unlockResponse) session.absorb(unlockResponse.headers);
+    messages.push(`Unlocked ${objectName}.`);
+
+    try {
+      const activationBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="${objectUri}" adtcore:name="${objectName.toUpperCase()}"/>
+</adtcore:objectReferences>`;
+      const activationResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "post",
+          url: "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+          data: activationBody,
+          headers: { "Content-Type": "application/xml", Accept: "application/xml", ...session.headers(true) },
+        },
+        opts
+      );
+      const activationXml = String(activationResponse.data);
+      const errorMessages = [...activationXml.matchAll(/type="[EA]"[^>]*>[\s\S]*?<[^:>]*:?shortText>([^<]*)</g)].map((m) => m[1]);
+      messages.push(...errorMessages);
+      const activated = errorMessages.length === 0;
+      messages.push(activated ? `${objectName} activated successfully.` : `Activation reported ${errorMessages.length} error(s).`);
+      return { syntaxOk: activated, activated, messages };
+    } catch (err) {
+      // Attach whatever we learned before the failure so it isn't lost —
+      // the caller only sees the raw HTTP error otherwise, with no
+      // visibility into which step failed or what session state led there.
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      throw err;
+    }
   }
 
-  async objectExists(_objectName: string): Promise<boolean> {
-    this.notConfigured("objectExists");
+  /**
+   * Confirms a replacement object (e.g. a released CDS view like
+   * I_BillingDocument) genuinely exists in the repository, via ADT's
+   * repository quick-search — a real check, not a name-format guess. A
+   * network/API failure here is intentionally left to propagate (not
+   * swallowed to a default), so a validation run fails loudly rather than
+   * silently assuming a replacement exists when it couldn't be confirmed.
+   */
+  async objectExists(objectName: string): Promise<boolean> {
+    const response = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "get",
+        url: `/sap/bc/adt/repository/informationsystem/search?operation=quickSearch&query=${encodeURIComponent(objectName)}&maxResults=5`,
+        headers: { Accept: "application/xml" },
+      },
+      { fetchCsrfToken: false }
+    );
+    const xml = String(response.data);
+    const upperName = objectName.toUpperCase();
+    return new RegExp(`adtcore:name="${upperName}"`, "i").test(xml);
   }
 }

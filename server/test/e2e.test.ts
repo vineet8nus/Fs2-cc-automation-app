@@ -47,15 +47,22 @@ describe("end-to-end mock workflow", () => {
 
     const gate1 = await request(app).post(`/api/programs/${id}/gate1`).send({ decision: "approve", comment: "looks fine" });
     expect(gate1.status).toBe(200);
-    expect(["AWAITING_HUMAN_REVIEW_2", "ESCALATED"]).toContain(gate1.body.state);
+    expect(gate1.body.state).toBe("AWAITING_FIX_REVIEW");
+    expect(gate1.body.proposedSource).toBeTruthy();
+    expect(gate1.body.baselineSource).toBeTruthy();
 
-    if (gate1.body.state === "ESCALATED") {
-      // Mock ATC data is randomized per program name; escalation is a valid
-      // documented outcome of the retry-cap path, not a test failure.
+    const fixReview = await request(app)
+      .post(`/api/programs/${id}/fix-review`)
+      .send({ decision: "approve", comment: "fix looks right, write it" });
+    expect(fixReview.status).toBe(200);
+    expect(["AWAITING_HUMAN_REVIEW_2", "ESCALATED"]).toContain(fixReview.body.state);
+
+    if (fixReview.body.state === "ESCALATED") {
+      // Documented valid outcome of the retry-cap path, not a test failure.
       return;
     }
 
-    expect(gate1.body.validationReport.overallPass).toBe(true);
+    expect(fixReview.body.validationReport.overallPass).toBe(true);
 
     const gate2 = await request(app).post(`/api/programs/${id}/gate2`).send({ decision: "approve", comment: "ship it" });
     expect(gate2.status).toBe(200);

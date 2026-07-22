@@ -10,7 +10,8 @@ describe("state machine", () => {
       ["ANALYZED", "BASELINING_TESTS"],
       ["BASELINING_TESTS", "AWAITING_HUMAN_REVIEW_1"],
       ["AWAITING_HUMAN_REVIEW_1", "REMEDIATING"],
-      ["REMEDIATING", "VALIDATING"],
+      ["REMEDIATING", "AWAITING_FIX_REVIEW"],
+      ["AWAITING_FIX_REVIEW", "VALIDATING"],
       ["VALIDATING", "AWAITING_HUMAN_REVIEW_2"],
       ["AWAITING_HUMAN_REVIEW_2", "TRANSPORT_RELEASED"],
       ["TRANSPORT_RELEASED", "DOCUMENTED"],
@@ -32,5 +33,15 @@ describe("state machine", () => {
   it("allows validation failure retry loop and escalation", () => {
     expect(() => assertTransitionAllowed("VALIDATING" as never, "REMEDIATING" as never)).not.toThrow();
     expect(() => assertTransitionAllowed("VALIDATING" as never, "ESCALATED" as never)).not.toThrow();
+  });
+
+  it("never lets REMEDIATING skip straight to VALIDATING without human fix review", () => {
+    expect(() => assertTransitionAllowed("REMEDIATING" as never, "VALIDATING" as never)).toThrow();
+  });
+
+  it("allows the fix-review gate to park, regenerate, or proceed to the real write", () => {
+    expect(() => assertTransitionAllowed("AWAITING_FIX_REVIEW" as never, "VALIDATING" as never)).not.toThrow();
+    expect(() => assertTransitionAllowed("AWAITING_FIX_REVIEW" as never, "REMEDIATING" as never)).not.toThrow();
+    expect(() => assertTransitionAllowed("AWAITING_FIX_REVIEW" as never, "PARKED" as never)).not.toThrow();
   });
 });
