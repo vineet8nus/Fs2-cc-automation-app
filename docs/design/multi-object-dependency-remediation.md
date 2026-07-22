@@ -1,4 +1,4 @@
-# Multi-Object Dependency-Aware Remediation — Design Document (v0.2, Reviewed)
+# Multi-Object Dependency-Aware Remediation — Design Document (v0.3, Finalized)
 
 Companion to `clean-core-migration-design.md`. That document assumes a "unit of
 work" is one ABAP object (a Program/Include). This document addresses what
@@ -9,15 +9,22 @@ structure, all of which have to activate together as one consistent set
 before the *originally requested* object will even syntax-check, let alone
 run correctly.
 
-**v0.2 changelog:** this revision incorporates a full technical review by an
+**v0.2 changelog:** this revision incorporated a full technical review by an
 ABAP/Clean-Core expert reviewer. The review's verdict was **PASS WITH
 CHANGES** — one claim in v0.1 was flagged as a load-bearing technical error
 (mass-activation is not atomic), one scoping question was flagged as
 undeclared (which Clean Core target — see §0), and the shared-dependency
 write policy was flagged as too permissive for this specific landscape (a
-shared dev/test client). All three are corrected below, along with several
-missing failure modes and a tighter v1 scope recommendation. See §7 for the
+shared dev/test client). All three were corrected, along with several
+missing failure modes and a tighter v1 scope recommendation. See §5 for the
 full list of what changed and why.
+
+**v0.3 changelog:** the user reviewed §6's open questions and answered all
+of them — this revision replaces those open questions with the confirmed
+decisions (§6 is now "Decisions," not "Open questions"), adds an explicit
+**top-priority constraint** (§0a: existing program functionality must never
+change as a side effect of any fix), and adds a phased implementation plan
+(§7) reflecting what actually gets built first.
 
 ## 0. Scope declaration (new in v0.2 — was previously undeclared)
 
@@ -37,6 +44,57 @@ one before anything else in it is meaningful:
   no classic dynpro/BDC/`CALL TRANSACTION`, no `SUBMIT` to classic reports,
   restricted internal-table and statement forms, and transactional data
   changes are expected to go through RAP, not ad hoc BAPI calls.
+
+**Confirmed (§6.1): Clean Core on Standard ABAP.** The user additionally
+confirmed a second scope rule that applies regardless of language-version
+target: **only custom (Y/Z-namespace) objects are ever fixed/written by
+this tool.** Standard/SAP objects are referenced as replacement targets
+(a released CDS view, a released API) but are never themselves read for
+editing, proposed a fix, or written to — this was already true of the
+single-object flow by construction (the object a user submits for
+migration is always their own custom object), and the multi-object design
+makes it an explicit, enforced rule for closure resolution too: any
+dependency node whose name doesn't match the Y/Z custom namespace is
+always `EXTERNAL_REFERENCE` (§3.1), never `LOCAL_DEPENDENCY`, regardless of
+its actual SAP object-release status.
+
+## 0a. Top priority: functional equivalence — non-negotiable
+
+Stated by the user as the top-priority rule for all of this work: **a
+program's functionality must not change** as a result of any fix this tool
+applies — automated or human-approved. Substituting a released API for a
+direct table/FM access is only an acceptable fix if the *observable
+behavior* of the program is unchanged; anything else is a regression, not a
+migration, regardless of whether it activates cleanly.
+
+This is not a new requirement invented for the multi-object case, but the
+multi-object failure modes in §1 are exactly where it is most at risk of
+being violated silently — a clean activation is not proof of behavioral
+equivalence. The specific risks below are called out explicitly because
+each one can pass syntax check and activation while still changing what the
+program actually does:
+
+- **CDS-view authorization filtering returning fewer rows than the original
+  table read** (§1) — the highest-risk item on this list. No error, no
+  dump, just quietly different output. This must be a named, explicit
+  validation check (§4, item 4) before any CDS-view substitution is
+  considered safe to write, not left to "activation passed."
+- **Currency/quantity reference-field loss** (§1) turning correct amounts
+  into unitless or wrongly-unit'd numbers.
+- **BAPI/RAP side effects the original direct write never had** (§1) —
+  output determination, change documents, workflow triggers — which are
+  functional changes even when the primary business data ends up identical.
+- **Append/enhancement fields silently dropped** because the released
+  successor never exposed them (§1).
+- **BAdI/implicit-enhancement detachment** when an edited include or
+  replaced FM was wrapped by custom logic that assumed the old code path
+  (§1).
+
+Every gate in this app's existing workflow (Gate 1 scope approval, fix
+review, validation, Gate 2 final approval) exists to catch exactly this
+class of problem before a real write happens — the multi-object design does
+not relax any of them; §4's checklist is the concrete, per-fix version of
+this principle.
 
 **This design targets Clean Core on Standard ABAP** — consistent with the
 confirmed landscape in the companion doc. Every finding category, every
@@ -293,6 +351,13 @@ MigrationUnit
   but only traverses into objects inside the configured allowlist and up to
   `maxDepth` hops. Anything outside the boundary is recorded as an
   `EXTERNAL_REFERENCE` leaf and never read for editing purposes.
+  **Confirmed default (§6.2): the package allowlist is the primary object's
+  own package.** For a brand-new object entered through the Create screen,
+  the package is a required field the user supplies at intake (§7,
+  task: make Package mandatory rather than defaulting to `UNKNOWN`) —
+  there is no discovery step needed to "find" the package for a new object
+  since it's asked for directly. **Confirmed `maxDepth` (§6.3): 2-3 hops**,
+  matching the range originally proposed in v0.1, not uncapped.
 - **DDIC objects are always `ddicReferences`, never part of the editable
   closure.** If a proposed fix would require a structure/table-type/domain
   change, the unit surfaces it as a manual, separately tracked action item
@@ -344,9 +409,17 @@ Revised sequence for approved fixes across a Migration Unit:
    catches a cross-object signature mismatch while everything is still
    reversible, but see the opening note: it does not catch every
    activation-time failure.
-4. **Mass-activate** the whole set in one ADT activation call. Treat the
-   result as a **per-object outcome list**, not a single pass/fail bit —
-   some activation units may succeed while others fail in the same call.
+4. **Mass-activate** the whole set in one ADT activation call. **Confirmed
+   scope rule (§6.6): the activation call's object-reference list contains
+   only the activation units that were actually changed and approved in
+   this run** — never the whole discovered closure, never anything merely
+   read for advisory/discovery purposes, and never an unrelated object that
+   happens to share the package. `EXTERNAL_REFERENCE` nodes and
+   advisory-only shared dependencies (§3.4) are never candidates for this
+   call under any circumstance, since they were never written in the first
+   place. Treat the result as a **per-object outcome list**, not a single
+   pass/fail bit — some activation units may succeed while others fail in
+   the same call.
 5. **Recovery, corrected:** for any activation unit that did **not**
    activate, discarding its inactive version is clean (nothing changed).
    For any activation unit that **did** activate, there is no "discard" —
@@ -528,31 +601,81 @@ draft)
 - §4 added: a consolidated pre-write failure-mode checklist for
   implementation reference.
 
-## 6. Open questions for the user
+## 6. Decisions (confirmed by the user — v0.1's open questions, resolved)
 
-1. **Confirm the §0 scope target** (Clean Core on Standard ABAP) is correct
-   — if the org's actual direction is the stricter ABAP Cloud language
-   version, this document needs a second pass with a materially larger
-   finding set.
-2. Package/software-component scope boundary: default to "same package as
-   the primary object," or does the landscape need an explicit allowlist?
-3. `maxDepth` default for closure resolution — 2-3 hops, or uncapped within
-   the scope boundary?
-4. Confirm the v1 bounded scope (§3.7: only ever auto-write the primary
-   object and its own includes; every shared dependency is advisory-only)
-   is acceptable, versus wanting shared-dependency writing sooner — noting
-   the reviewer's assessment that this is the safer default for a shared
-   dev/test client specifically.
-5. Is there an appetite/timeline for an isolated sandbox system, which is
-   the stated precondition for the v2 widening in §3.7?
-6. Should this design lean on ATC's own worklist + ADT mass quick-fix as
-   the default mechanism for canned/released-mapping fixes (§2), reserving
-   the bespoke Migration Unit machinery for AI-authored/non-canned fixes
-   only? This changes how much of §3 needs to be built at all.
+1. **Scope target: Clean Core on Standard ABAP — confirmed**, with an
+   additional standing rule: **only custom (Y/Z) objects are ever fixed;
+   standard objects are used only as replacement targets, never edited**
+   (folded into §0 as a hard rule, not a configurable option).
+2. **Package/software-component scope boundary: same package as the primary
+   object, by default.** For a new object entered via the Create screen,
+   the package is asked for directly at intake (now a required field, not
+   defaulted — see §7, Phase 1b) rather than inferred.
+3. **`maxDepth`: 2-3 hops** (not uncapped).
+4. **v1 bounded scope confirmed**: automated writing stays limited to the
+   primary object and its own includes; every shared local dependency is
+   advisory-only, never auto-written, for the reasons in §3.4. No
+   pushback was raised on this being the safer default for the current
+   shared dev/test client.
+5. **Sandbox timeline: none set yet.** The v2 widening in §3.7 (writing
+   shared local dependencies) stays gated on an isolated sandbox existing —
+   revisit when/if one is planned; no further action now.
+6. **Lean on ATC's own worklist + ADT mass quick-fix for canned/released
+   mappings — confirmed**, reserving the bespoke Migration Unit machinery
+   for AI-authored/non-canned fixes, **with an explicit scoping
+   clarification from the user**: whichever mechanism performs the
+   activation, **the mass-activation call only ever targets the objects
+   actually changed in that run** — never the full discovered closure,
+   never anything read for advisory/discovery purposes only. This is now
+   stated as a hard rule in §3.3, not left implicit.
 
-## 7. Status
+*(v0.2's changelog, §5 above, still lists the full set of changes from the
+original v0.1 draft. v0.3 additionally added §0a, converted §6 from
+questions to confirmed decisions, and added §7 below.)*
 
-Reviewed by an ABAP/Clean-Core expert agent — verdict **PASS WITH CHANGES**.
-All P0 and P1 review items are incorporated above (§5 summarizes what
-changed). Still pending: user decisions on the open questions in §6 before
-any implementation begins.
+## 7. Phased implementation plan
+
+Given §0a's top-priority constraint — existing functionality must not
+change — this is being built in phases that each leave the previously
+working single-object flow untouched, rather than as one large change to
+the write path at once.
+
+- **Phase 1 (this pass): read-only visibility, zero change to the write
+  path.** Extend discovery to actually fetch real Include and Class source
+  (via the correct ADT endpoints — `programs/includes` and `oo/classes`,
+  distinct from the `programs/programs` endpoint the primary object uses),
+  run the existing static clean-core rules against each of them, and
+  attribute each finding to the object it was actually found in (a new
+  `containerObject` field, distinct from the existing `objectName` field
+  which names the violation's *target*, e.g. the table being misread — not
+  its container). This directly fixes the "a finding exists but I don't see
+  it or any change for it" gap for findings that live in an Include/Class
+  rather than the primary object. **Remediation and the write/activate path
+  are completely untouched in this phase** — they continue to operate only
+  on the primary object's source, exactly as before. A finding attributed
+  to a different container object naturally falls into the existing
+  `deferred` / `no-automated-fix` handling (already shipped), with a
+  clearer reason message explaining *why*: it lives in a different object
+  that multi-object writes don't cover yet, not that no fix could be
+  identified.
+- **Phase 1b (this pass): Package becomes a required intake field** on the
+  single-object Create screen, replacing the current silent default to
+  `UNKNOWN` — directly implementing decision §6.2's "ask for the package
+  name" for new objects.
+- **Phase 2 (not yet started, higher risk, needs its own review pass before
+  it ships): write-capable multi-object remediation** for the primary
+  object's own includes only (per the bounded v1 scope in §3.7) — batch
+  lock/write/syntax-check/mass-activate (§3.3) restricted to exactly the
+  changed activation units (§6.6), the full failure-mode checklist (§4)
+  enforced before any such fix is proposed, and the per-object Fix Review
+  UI (§3.6). This phase touches the real write path and will get the same
+  kind of scrutiny (and, if warranted, another expert review pass) as
+  Phase 1 got before it starts.
+
+## 8. Status
+
+Reviewed by an ABAP/Clean-Core expert agent — verdict **PASS WITH CHANGES**,
+all items incorporated (v0.2). All open questions answered by the user and
+recorded as decisions above (v0.3, §6). Phase 1/1b (read-only visibility +
+required package field) is being implemented now; Phase 2 (write-capable
+multi-object remediation) is deliberately deferred to its own pass.
