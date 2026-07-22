@@ -55,6 +55,11 @@ export function ProgramDetailPage() {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      // Even on error, re-fetch so the displayed state reflects whatever
+      // the backend actually persisted rather than a stale pre-action
+      // snapshot — some failures happen after a state transition was
+      // already saved.
+      await load();
     } finally {
       setBusy(false);
     }

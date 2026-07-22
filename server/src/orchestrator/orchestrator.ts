@@ -150,15 +150,26 @@ export class Orchestrator {
 
     const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
     const fixedFindings = program.findings.filter((f) => f.status === "fixed");
-    program.validationReport = await runValidation(
-      program.name,
-      objectNames,
-      remediation.newSource,
-      fixedFindings,
-      program.findings,
-      program.baselineTests ?? { runAt: new Date().toISOString(), cases: [] },
-      this.sap
-    );
+    try {
+      program.validationReport = await runValidation(
+        program.name,
+        objectNames,
+        remediation.newSource,
+        fixedFindings,
+        program.findings,
+        program.baselineTests ?? { runAt: new Date().toISOString(), cases: [] },
+        this.sap
+      );
+    } catch (err) {
+      // A failure here (e.g. an unimplemented write-path method in real
+      // mode) must not leave the program stuck in VALIDATING with no way
+      // to retry — escalate immediately with the real cause on record,
+      // rather than letting the exception bubble out of an already-
+      // persisted state transition.
+      moveTo(program, "ESCALATED", "ValidationAgent", "validation-error", err instanceof Error ? err.message : String(err));
+      this.store.save(program);
+      return program;
+    }
 
     if (program.validationReport.overallPass) {
       for (const f of fixedFindings) f.status = "validated";
