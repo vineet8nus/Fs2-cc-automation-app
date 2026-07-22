@@ -38,7 +38,14 @@ export interface UnitTestCaseResult {
  * see docs/design/clean-core-migration-design.md §3a/§6.5/§9.
  */
 export interface SapClient {
-  readObjectSource(programName: string): Promise<ObjectSource>;
+  /**
+   * `objectType` is optional and additive — omitting it (as every existing
+   * call site for the primary object does) preserves the original
+   * behavior exactly (reads a Program). It's used by discovery to fetch
+   * real source for INCLUDE/CLASS dependencies via their own ADT
+   * endpoints, distinct from a program's — see RealAdtClient.
+   */
+  readObjectSource(programName: string, objectType?: string): Promise<ObjectSource>;
   getDependencies(programName: string): Promise<DependencyObject[]>;
   /**
    * `currentSource` is the program's current source text. Real ATC inspects

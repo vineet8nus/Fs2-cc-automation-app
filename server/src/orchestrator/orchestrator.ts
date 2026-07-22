@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
-import { AuditEntry, ExcelIntakeRow, Finding, Program, WorkflowState } from "../domain/types";
+import { AuditEntry, DependencyObject, ExcelIntakeRow, Finding, Program, WorkflowState } from "../domain/types";
 import { ProgramStore } from "../store/store";
-import { SapClient } from "../sap/SapClient";
+import { ObjectSource, SapClient } from "../sap/SapClient";
 import { runDiscovery } from "../agents/discoveryAgent";
 import { runCleanCoreAnalysis } from "../agents/cleanCoreAnalysisAgent";
 import { runBaselineTests } from "../agents/baselineTestAgent";
@@ -24,6 +24,34 @@ function moveTo(program: Program, to: WorkflowState, actor: string, action: stri
   const from = program.state;
   program.state = to;
   audit(program, actor, action, from, to, details);
+}
+
+/**
+ * Which of the primary object's dependencies are eligible for real
+ * findings analysis, per docs/design/multi-object-dependency-remediation.md
+ * §0/§3.2: only Includes and Classes (the closure types that are actually
+ * part of the same compiled unit or a direct custom dependency), only
+ * custom (Y/Z-namespace) objects — standard objects are never analyzed as
+ * "ours to fix", only ever referenced as replacement targets — and only
+ * ones whose real source was actually retrieved (discoveryAgent falls back
+ * to a placeholder string on a read failure; analyzing that placeholder as
+ * if it were real code would manufacture false findings).
+ *
+ * Real-mode only: mock mode fabricates a handful of generic-named
+ * dependencies whose "source" is always the same fixed template
+ * regardless of name (see MockSapClient), so expanding analysis to them
+ * would multiply the same findings across fake objects — a pure
+ * demo-mode artifact, not a real signal. Gating this to real mode keeps
+ * every existing mock-mode test and demo behavior exactly as it was.
+ */
+function resolveClosureObjects(dependencies: DependencyObject[], dependencySources: ObjectSource[]): { name: string; source: string }[] {
+  if ((process.env.SAP_INTEGRATION_MODE ?? "mock") !== "real") return [];
+  const byName = new Map(dependencySources.map((s) => [s.name, s]));
+  return dependencies
+    .filter((d) => (d.type === "INCLUDE" || d.type === "CLASS") && /^[YZ]/i.test(d.name))
+    .map((d) => byName.get(d.name))
+    .filter((s): s is ObjectSource => !!s && !s.source.startsWith("-- source not retrieved"))
+    .map((s) => ({ name: s.name, source: s.source }));
 }
 
 export class Orchestrator {
@@ -91,7 +119,8 @@ export class Orchestrator {
     this.store.save(program);
 
     const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
-    program.findings = await runCleanCoreAnalysis(objectNames, program.name, discovery.programSource, this.sap);
+    const closureObjects = resolveClosureObjects(program.dependencies, discovery.dependencySources);
+    program.findings = await runCleanCoreAnalysis(objectNames, program.name, discovery.programSource, this.sap, closureObjects);
     program.worstExtensibilityLevel = worstExtensibilityLevel(program.findings);
     program.riskScore = computeRiskScore(program.findings, program.criticality, program.dependencies.length);
     moveTo(program, "ANALYZED", "CleanCoreAnalysisAgent", "atc-run-complete", `${program.findings.length} findings, risk ${program.riskScore.total} (${program.riskScore.band})`);
@@ -147,12 +176,35 @@ export class Orchestrator {
   private async proposeRemediation(program: Program, sourceOverride?: string): Promise<Program> {
     const approved = program.findings.filter((f) => f.status === "approved");
 
+    // Remediation only ever writes to the primary object's source (see
+    // docs/design/multi-object-dependency-remediation.md §0/§3.7 — writing
+    // to Includes/Classes is Phase 2, not yet built). A finding whose
+    // containerObject is a different object (surfaced per Phase 1's
+    // closure-findings visibility) is deferred here explicitly, rather
+    // than relying on its violation text merely happening not to match
+    // during the primary object's regex-based fix — an incidental
+    // non-match isn't a real guarantee if the same table/FM name were ever
+    // to also appear in the primary object's own source for an unrelated
+    // reason.
+    const crossObjectFindings = approved.filter((f) => f.containerObject !== program.name);
+    for (const f of crossObjectFindings) {
+      f.status = "deferred";
+      audit(
+        program,
+        "RemediationAgent",
+        "no-automated-fix",
+        undefined,
+        undefined,
+        `${f.checkName} (${f.objectName}): found in ${f.containerObject}, not the primary object — multi-object writes aren't supported yet; needs manual remediation.`
+      );
+    }
+
     // Verify any suggested replacement object actually exists BEFORE ever
     // proposing a fix that references it — not just at write time. A
     // finding whose replacement can't be confirmed is deferred rather than
     // silently applied on a guess.
     const verifiedFindings: Finding[] = [];
-    for (const f of approved) {
+    for (const f of approved.filter((f) => f.containerObject === program.name)) {
       if (f.suggestedFix.replacementObject) {
         const exists = await this.sap.objectExists(f.suggestedFix.replacementObject).catch(() => false);
         if (!exists) {

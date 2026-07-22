@@ -58,6 +58,8 @@ export interface Finding {
   checkName: string;
   message: string;
   objectName: string;
+  /** The repository object (program, or one of its own Includes/Classes) this finding actually occurs in. */
+  containerObject: string;
   priority: 1 | 2 | 3 | 4;
   extensibilityLevel: ExtensibilityLevel;
   suggestedFix: SuggestedFix;

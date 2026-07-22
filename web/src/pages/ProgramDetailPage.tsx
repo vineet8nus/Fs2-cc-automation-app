@@ -225,6 +225,7 @@ export function ProgramDetailPage() {
                           <>
                             {program.state === "AWAITING_HUMAN_REVIEW_1" && <TableColumn>Include</TableColumn>}
                             <TableColumn>Check</TableColumn>
+                            <TableColumn>Found in</TableColumn>
                             <TableColumn>Message</TableColumn>
                             <TableColumn>Priority</TableColumn>
                             <TableColumn>Level</TableColumn>
@@ -258,6 +259,9 @@ export function ProgramDetailPage() {
                               <Text>
                                 {f.checkName} ({f.atcCheckId})
                               </Text>
+                            </TableCell>
+                            <TableCell>
+                              <Text>{f.containerObject === program.name ? f.containerObject : `${f.containerObject} (Include/Class)`}</Text>
                             </TableCell>
                             <TableCell>
                               <Text>{f.message}</Text>

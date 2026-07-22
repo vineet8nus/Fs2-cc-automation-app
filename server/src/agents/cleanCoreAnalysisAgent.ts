@@ -39,13 +39,14 @@ function runCustomRules(programName: string, source: string): AtcRawFinding[] {
   return findings;
 }
 
-function toFinding(raw: AtcRawFinding): Finding {
+function toFinding(raw: AtcRawFinding, containerObject: string): Finding {
   return {
     id: uuidv4(),
     atcCheckId: raw.atcCheckId,
     checkName: raw.checkName,
     message: raw.message,
     objectName: raw.objectName,
+    containerObject,
     priority: raw.priority,
     extensibilityLevel: raw.extensibilityLevel,
     suggestedFix: {
@@ -58,13 +59,33 @@ function toFinding(raw: AtcRawFinding): Finding {
   };
 }
 
+/**
+ * `closureObjects` are the primary object's own Includes/Classes whose real
+ * source could be fetched (see discoveryAgent + RealAdtClient's
+ * type-routed readObjectSource) — findings from them are attributed to the
+ * actual container they occur in via `containerObject`, instead of being
+ * invisible (per docs/design/multi-object-dependency-remediation.md §1/§3.2).
+ * Defaults to empty so every existing call site behaves exactly as before.
+ * Remediation still only ever fixes the primary object's source — a
+ * finding whose containerObject differs from `programName` is always
+ * deferred with an explanation (orchestrator.ts), never silently attempted.
+ */
 export async function runCleanCoreAnalysis(
   objectNames: string[],
   programName: string,
   programSource: ObjectSource,
-  sap: SapClient
+  sap: SapClient,
+  closureObjects: { name: string; source: string }[] = []
 ): Promise<Finding[]> {
   const atcFindings = await sap.runAtcCheck(objectNames, programSource.source);
   const customFindings = runCustomRules(programName, programSource.source);
-  return [...atcFindings, ...customFindings].map(toFinding);
+  const findings = [...atcFindings, ...customFindings].map((f) => toFinding(f, programName));
+
+  for (const obj of closureObjects) {
+    const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source);
+    const objCustomFindings = runCustomRules(obj.name, obj.source);
+    findings.push(...[...objAtcFindings, ...objCustomFindings].map((f) => toFinding(f, obj.name)));
+  }
+
+  return findings;
 }

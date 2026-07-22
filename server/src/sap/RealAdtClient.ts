@@ -71,8 +71,31 @@ export class RealAdtClient implements SapClient {
     );
   }
 
-  async readObjectSource(programName: string): Promise<ObjectSource> {
+  /**
+   * `objectType` routes to the correct ADT collection for the object being
+   * read — Includes and Classes live under different URI collections than
+   * Programs and are not readable via the programs/programs endpoint.
+   * Omitting it (every call site for the primary object being migrated)
+   * preserves the exact original behavior: reads a Program, unchanged.
+   */
+  async readObjectSource(programName: string, objectType?: string): Promise<ObjectSource> {
     const encodedName = encodeURIComponent(programName.toLowerCase());
+    if (objectType === "INCLUDE") {
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "get", url: `/sap/bc/adt/programs/includes/${encodedName}/source/main`, headers: { Accept: "text/plain" } },
+        { fetchCsrfToken: false }
+      );
+      return { name: programName, type: "INCL", source: String(response.data) };
+    }
+    if (objectType === "CLASS") {
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "get", url: `/sap/bc/adt/oo/classes/${encodedName}/source/main`, headers: { Accept: "text/plain" } },
+        { fetchCsrfToken: false }
+      );
+      return { name: programName, type: "CLAS", source: String(response.data) };
+    }
     const response = await executeHttpRequest(
       { destinationName: this.destinationName },
       {

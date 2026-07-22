@@ -60,7 +60,18 @@ export interface Finding {
   atcCheckId: string;
   checkName: string;
   message: string;
+  /** The violation's target — e.g. the table/FM being misused. Not the object the finding was found in; see containerObject. */
   objectName: string;
+  /**
+   * The repository object this finding actually occurs in — the primary
+   * object being migrated, or (per the multi-object design,
+   * docs/design/multi-object-dependency-remediation.md §3.2) one of its own
+   * Includes/Classes. Remediation today only ever fixes the primary
+   * object's source, so a finding whose containerObject differs from the
+   * program being migrated is always deferred with an explanation rather
+   * than silently attempted.
+   */
+  containerObject: string;
   priority: AtcPriority;
   extensibilityLevel: ExtensibilityLevel;
   suggestedFix: SuggestedFix;

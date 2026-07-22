@@ -74,7 +74,7 @@ function SingleObjectForm() {
   const selectedType = OBJECT_TYPES.find((t) => t.value === objectType);
 
   async function handleCreate() {
-    if (!programName.trim()) return;
+    if (!programName.trim() || !pkg.trim()) return;
     setBusy(true);
     setError(null);
     try {
@@ -129,7 +129,7 @@ function SingleObjectForm() {
                 ))}
               </Select>
             </FormItem>
-            <FormItem label="Package">
+            <FormItem label="Package *">
               <Input value={pkg} onInput={(e) => setPkg(e.target.value)} placeholder="e.g. ZCC" />
             </FormItem>
           </FormGroup>
@@ -159,7 +159,7 @@ function SingleObjectForm() {
           <Bar
             design="FloatingFooter"
             endContent={
-              <Button design="Emphasized" disabled={!programName.trim() || busy} onClick={handleCreate}>
+              <Button design="Emphasized" disabled={!programName.trim() || !pkg.trim() || busy} onClick={handleCreate}>
                 Create &amp; run discovery + analysis →
               </Button>
             }

@@ -51,10 +51,17 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
       if (!programName || typeof programName !== "string") {
         return res.status(400).json({ error: "programName is required" });
       }
+      if (!pkg || typeof pkg !== "string") {
+        // Per docs/design/multi-object-dependency-remediation.md §6.2: the
+        // package scope for dependency-closure resolution defaults to the
+        // primary object's own package, so a new object must state it
+        // explicitly at intake rather than silently defaulting.
+        return res.status(400).json({ error: "package is required" });
+      }
       const row = {
         programName,
         objectType: OBJECT_TYPES.includes(objectType) ? objectType : "PROGRAM",
-        package: pkg || "UNKNOWN",
+        package: pkg,
         businessArea: businessArea || "General",
         criticality: ["H", "M", "L"].includes(criticality) ? criticality : "M",
         owner: owner || "Unassigned",

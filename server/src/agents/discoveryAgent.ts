@@ -27,7 +27,7 @@ export async function runDiscovery(programName: string, sap: SapClient): Promise
   const dependencySources = await Promise.all(
     dependencies.map(async (dep) => {
       try {
-        return await sap.readObjectSource(dep.name);
+        return await sap.readObjectSource(dep.name, dep.type);
       } catch (err) {
         return {
           name: dep.name,

@@ -91,7 +91,7 @@ const CATALOG: Array<{
 const DEP_TYPES: DependencyObjectType[] = ["INCLUDE", "CLASS", "FUNCTION_MODULE", "TABLE", "CDS_VIEW"];
 
 export class MockSapClient implements SapClient {
-  async readObjectSource(programName: string): Promise<ObjectSource> {
+  async readObjectSource(programName: string, _objectType?: string): Promise<ObjectSource> {
     return {
       name: programName,
       type: "PROG",
