@@ -197,4 +197,17 @@ describe("extractDependencies", () => {
     const deps = extractDependencies("CALL FUNCTION 'BAPI_MATERIAL_GET_DETAIL'.");
     expect(deps).toContainEqual({ name: "BAPI_MATERIAL_GET_DETAIL", type: "FUNCTION_MODULE" });
   });
+
+  it("detects INCLUDE statements as INCLUDE dependencies — a real shell-report program on SHD200SYSTEM (ZICS_OUTB_COLLECTION_INFO) is nothing but four of these, with all real logic living in the includes", () => {
+    const source = [
+      "REPORT zics_outb_collection_info.",
+      "INCLUDE zics_outb_collection_info_top.",
+      "INCLUDE zics_outb_collection_info_f00.",
+      "INCLUDE zics_outb_collection_info_f01.",
+    ].join("\n");
+    const deps = extractDependencies(source);
+    expect(deps).toContainEqual({ name: "ZICS_OUTB_COLLECTION_INFO_TOP", type: "INCLUDE" });
+    expect(deps).toContainEqual({ name: "ZICS_OUTB_COLLECTION_INFO_F00", type: "INCLUDE" });
+    expect(deps).toContainEqual({ name: "ZICS_OUTB_COLLECTION_INFO_F01", type: "INCLUDE" });
+  });
 });

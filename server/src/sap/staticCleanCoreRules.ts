@@ -218,6 +218,18 @@ export function extractDependencies(rawSource: string): DependencyObject[] {
 
   const found = new Map<string, DependencyObjectType>();
 
+  // INCLUDE statements were missing entirely until this was caught against
+  // a real program on SHD200SYSTEM whose *entire* body was four INCLUDEs
+  // (a very common ABAP shell-report pattern: REPORT + a handful of
+  // top/f00/f01/f02 includes carrying all the actual logic) — the main
+  // program alone had nothing to find, and with no INCLUDE dependency
+  // detected at all, Phase 1's include-source-reading code never had
+  // anything to act on either. This is exactly the "a finding whose real
+  // occurrence is inside an INCLUDE is invisible to it entirely" gap
+  // docs/design/multi-object-dependency-remediation.md §1 describes.
+  for (const m of source.matchAll(/\bINCLUDE\s+([A-Za-z_][A-Za-z0-9_]*)\s*\./gi)) {
+    found.set(m[1].toUpperCase(), "INCLUDE");
+  }
   for (const m of source.matchAll(/\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)/gi)) {
     const name = m[1];
     if (name.toUpperCase() === "TABLE") continue;
