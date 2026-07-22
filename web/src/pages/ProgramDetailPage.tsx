@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { LevelBadge, RiskBadge, StateBadge } from "../components/Badges";
+import { DiffView, RawDiffView } from "../components/DiffView";
 import { objectTypeLabel } from "../components/objectTypes";
 import { ProgramDetail } from "../types";
 
@@ -361,13 +362,8 @@ export function ProgramDetailPage() {
                           </MessageStrip>
                           <FlexBox style={{ gap: "1rem" }}>
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <Label>Original (baseline)</Label>
-                              <TextArea
-                                value={program.baselineSource ?? ""}
-                                readonly
-                                rows={22}
-                                style={{ width: "100%", fontFamily: "monospace", fontSize: "0.8rem" }}
-                              />
+                              <Label>Diff (baseline → proposed) — red removed, green added</Label>
+                              <DiffView oldText={program.baselineSource ?? ""} newText={editedSource} />
                             </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <Label>Proposed fix (editable)</Label>
@@ -442,7 +438,7 @@ export function ProgramDetailPage() {
 
                     {program.gitBaseline?.fixBranch && (
                       <Panel headerText={`Change diff (${program.gitBaseline.baselineBranch} → ${program.gitBaseline.fixBranch})`} collapsed>
-                        <pre style={{ padding: "1rem", overflowX: "auto", fontSize: "0.8rem" }}>{diff || "No diff produced."}</pre>
+                        <div style={{ padding: "1rem" }}>{diff ? <RawDiffView text={diff} /> : <Text>No diff produced.</Text>}</div>
                       </Panel>
                     )}
 
