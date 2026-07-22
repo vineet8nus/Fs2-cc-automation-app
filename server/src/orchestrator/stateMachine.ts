@@ -2,7 +2,9 @@ import { WorkflowState } from "../domain/types";
 
 // Allowed transitions per docs/design/clean-core-migration-design.md §5.
 export const ALLOWED_TRANSITIONS: Record<WorkflowState, WorkflowState[]> = {
-  UPLOADED: ["GIT_BASELINED"],
+  // PARKED here covers an object type the live system can't process yet
+  // (see Orchestrator.ingest) — parked before any Git/ADT call is made.
+  UPLOADED: ["GIT_BASELINED", "PARKED"],
   GIT_BASELINED: ["DISCOVERED"],
   DISCOVERED: ["ANALYZED"],
   ANALYZED: ["BASELINING_TESTS"],

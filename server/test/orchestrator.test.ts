@@ -70,3 +70,23 @@ describe("orchestrator verifies replacement objects before proposing a fix", () 
     expect(proposed.auditLog.some((a) => a.action === "replacement-object-not-found")).toBe(true);
   });
 });
+
+describe("orchestrator guards unsupported object types in real mode", () => {
+  it("parks a non-PROGRAM object without touching SAP when SAP_INTEGRATION_MODE=real", async () => {
+    const prior = process.env.SAP_INTEGRATION_MODE;
+    process.env.SAP_INTEGRATION_MODE = "real";
+    try {
+      const store = new InMemoryProgramStore();
+      const orchestrator = new Orchestrator(store, new MockSapClient());
+
+      const [program] = await orchestrator.ingest([
+        { programName: "ZCL_TEST", objectType: "CLASS", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+      ]);
+
+      expect(program.state).toBe("PARKED");
+      expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(true);
+    } finally {
+      process.env.SAP_INTEGRATION_MODE = prior;
+    }
+  });
+});

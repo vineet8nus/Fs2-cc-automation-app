@@ -17,6 +17,8 @@ export type WorkflowState =
 
 export type ExtensibilityLevel = "A" | "B" | "C" | "D";
 
+export type AbapObjectType = "PROGRAM" | "CLASS" | "FUNCTION_GROUP" | "INCLUDE" | "INTERFACE" | "CDS_VIEW";
+
 export interface RiskScoreBreakdown {
   total: number;
   band: "Critical" | "High" | "Medium" | "Low";
@@ -31,6 +33,7 @@ export interface RiskScoreBreakdown {
 export interface ProgramSummary {
   id: string;
   name: string;
+  objectType: AbapObjectType;
   package: string;
   businessArea: string;
   criticality: "H" | "M" | "L";

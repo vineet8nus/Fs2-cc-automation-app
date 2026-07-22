@@ -43,14 +43,17 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   // Single-object entry, for the one-at-a-time wizard flow — same intake
   // shape as an Excel row, without needing to build a spreadsheet for one
   // program. Excel upload remains the bulk path.
+  const OBJECT_TYPES = ["PROGRAM", "CLASS", "FUNCTION_GROUP", "INCLUDE", "INTERFACE", "CDS_VIEW"];
+
   app.post("/api/programs", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { programName, package: pkg, businessArea, criticality, owner } = req.body ?? {};
+      const { programName, objectType, package: pkg, businessArea, criticality, owner } = req.body ?? {};
       if (!programName || typeof programName !== "string") {
         return res.status(400).json({ error: "programName is required" });
       }
       const row = {
         programName,
+        objectType: OBJECT_TYPES.includes(objectType) ? objectType : "PROGRAM",
         package: pkg || "UNKNOWN",
         businessArea: businessArea || "General",
         criticality: ["H", "M", "L"].includes(criticality) ? criticality : "M",
@@ -232,6 +235,7 @@ function summarize(program: Program) {
   return {
     id: program.id,
     name: program.name,
+    objectType: program.objectType,
     package: program.package,
     businessArea: program.businessArea,
     criticality: program.criticality,

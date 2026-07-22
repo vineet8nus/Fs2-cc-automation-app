@@ -24,6 +24,13 @@ export type AtcPriority = 1 | 2 | 3 | 4; // 1 = error, 2 = warning, 3 = info, 4 
 
 export type Criticality = "H" | "M" | "L";
 
+// The kind of repository object being migrated. Only PROGRAM is actually
+// read/written against the live system today (RealAdtClient hard-codes the
+// ADT "programs/programs" endpoint) — the others are accepted as intake
+// metadata so the backlog is honest about what's coming, and are parked with
+// an explanation rather than silently mis-processed as a program.
+export type AbapObjectType = "PROGRAM" | "CLASS" | "FUNCTION_GROUP" | "INCLUDE" | "INTERFACE" | "CDS_VIEW";
+
 export type DependencyObjectType =
   | "INCLUDE"
   | "CLASS"
@@ -131,6 +138,7 @@ export interface TechSpecReport {
 export interface Program {
   id: string;
   name: string;
+  objectType: AbapObjectType;
   package: string;
   businessArea: string;
   criticality: Criticality;
@@ -161,6 +169,7 @@ export interface Program {
 
 export interface ExcelIntakeRow {
   programName: string;
+  objectType?: AbapObjectType;
   package: string;
   businessArea: string;
   criticality: Criticality;

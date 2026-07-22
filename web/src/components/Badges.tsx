@@ -1,21 +1,35 @@
-import { Badge } from "@ui5/webcomponents-react";
+import { ObjectStatus, ValueState } from "@ui5/webcomponents-react";
 import { ExtensibilityLevel, RiskScoreBreakdown, WorkflowState } from "../types";
 
-const LEVEL_SCHEME: Record<ExtensibilityLevel, number> = { A: 8, B: 1, C: 4, D: 6 };
+const LEVEL_STATE: Record<ExtensibilityLevel, ValueState> = {
+  A: ValueState.Success,
+  B: ValueState.Information,
+  C: ValueState.Warning,
+  D: ValueState.Error,
+};
 
 export function LevelBadge({ level }: { level?: ExtensibilityLevel }) {
-  if (!level) return <Badge colorScheme="8">n/a</Badge>;
-  return <Badge colorScheme={String(LEVEL_SCHEME[level])}>Level {level}</Badge>;
+  if (!level) return <ObjectStatus state={ValueState.None}>n/a</ObjectStatus>;
+  return (
+    <ObjectStatus state={LEVEL_STATE[level]} showDefaultIcon>
+      Level {level}
+    </ObjectStatus>
+  );
 }
 
-const BAND_SCHEME: Record<RiskScoreBreakdown["band"], number> = { Critical: 6, High: 6, Medium: 4, Low: 8 };
+const BAND_STATE: Record<RiskScoreBreakdown["band"], ValueState> = {
+  Critical: ValueState.Error,
+  High: ValueState.Error,
+  Medium: ValueState.Warning,
+  Low: ValueState.Success,
+};
 
 export function RiskBadge({ riskScore }: { riskScore?: RiskScoreBreakdown }) {
-  if (!riskScore) return <Badge colorScheme="8">n/a</Badge>;
+  if (!riskScore) return <ObjectStatus state={ValueState.None}>n/a</ObjectStatus>;
   return (
-    <Badge colorScheme={String(BAND_SCHEME[riskScore.band])}>
+    <ObjectStatus state={BAND_STATE[riskScore.band]} showDefaultIcon>
       {riskScore.total} · {riskScore.band}
-    </Badge>
+    </ObjectStatus>
   );
 }
 
@@ -37,15 +51,21 @@ const STATE_LABEL: Record<WorkflowState, string> = {
   DONE: "Done",
 };
 
-const STATE_SCHEME: Partial<Record<WorkflowState, number>> = {
-  PARKED: 4,
-  ESCALATED: 6,
-  DONE: 8,
-  AWAITING_HUMAN_REVIEW_1: 2,
-  AWAITING_FIX_REVIEW: 2,
-  AWAITING_HUMAN_REVIEW_2: 2,
+const STATE_VALUE: Partial<Record<WorkflowState, ValueState>> = {
+  PARKED: ValueState.Warning,
+  ESCALATED: ValueState.Error,
+  DONE: ValueState.Success,
+  TRANSPORT_RELEASED: ValueState.Success,
+  DOCUMENTED: ValueState.Success,
+  AWAITING_HUMAN_REVIEW_1: ValueState.Information,
+  AWAITING_FIX_REVIEW: ValueState.Information,
+  AWAITING_HUMAN_REVIEW_2: ValueState.Information,
 };
 
 export function StateBadge({ state }: { state: WorkflowState }) {
-  return <Badge colorScheme={String(STATE_SCHEME[state] ?? 1)}>{STATE_LABEL[state]}</Badge>;
+  return (
+    <ObjectStatus state={STATE_VALUE[state] ?? ValueState.None} showDefaultIcon>
+      {STATE_LABEL[state]}
+    </ObjectStatus>
+  );
 }

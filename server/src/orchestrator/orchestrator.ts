@@ -37,6 +37,7 @@ export class Orchestrator {
       let program: Program = {
         id: uuidv4(),
         name: row.programName,
+        objectType: row.objectType ?? "PROGRAM",
         package: row.package,
         businessArea: row.businessArea,
         criticality: row.criticality,
@@ -51,6 +52,20 @@ export class Orchestrator {
       };
       audit(program, "system", "excel-intake", undefined, "UPLOADED", `Row: ${row.programName}`);
       this.store.save(program);
+
+      const isRealMode = (process.env.SAP_INTEGRATION_MODE ?? "mock") === "real";
+      if (isRealMode && program.objectType !== "PROGRAM") {
+        moveTo(
+          program,
+          "PARKED",
+          "system",
+          "object-type-not-supported",
+          `${program.objectType} objects aren't read/written against the live system yet — only ABAP Programs/Includes are. Parked without touching SAP.`
+        );
+        this.store.save(program);
+        created.push(program);
+        continue;
+      }
 
       try {
         program = await this.runAutomaticPipeline(program);

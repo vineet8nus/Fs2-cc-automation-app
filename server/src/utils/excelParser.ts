@@ -1,13 +1,19 @@
 import * as XLSX from "xlsx";
-import { Criticality, ExcelIntakeRow } from "../domain/types";
+import { AbapObjectType, Criticality, ExcelIntakeRow } from "../domain/types";
 
 const CRITICALITY_VALUES: Criticality[] = ["H", "M", "L"];
+const OBJECT_TYPE_VALUES: AbapObjectType[] = ["PROGRAM", "CLASS", "FUNCTION_GROUP", "INCLUDE", "INTERFACE", "CDS_VIEW"];
 
 function normalizeCriticality(raw: unknown): Criticality {
   const v = String(raw ?? "M").trim().toUpperCase();
   if (v.startsWith("H")) return "H";
   if (v.startsWith("L")) return "L";
   return "M";
+}
+
+function normalizeObjectType(raw: unknown): AbapObjectType {
+  const v = String(raw ?? "PROGRAM").trim().toUpperCase().replace(/[\s-]+/g, "_");
+  return (OBJECT_TYPE_VALUES as string[]).includes(v) ? (v as AbapObjectType) : "PROGRAM";
 }
 
 function firstDefined(row: Record<string, unknown>, keys: string[]): unknown {
@@ -37,6 +43,7 @@ export function parseIntakeExcel(buffer: Buffer): ExcelIntakeRow[] {
     if (!programName) continue;
     result.push({
       programName,
+      objectType: normalizeObjectType(firstDefined(row, ["Object Type", "Type"])),
       package: String(firstDefined(row, ["Package", "Development Package"]) ?? "").trim() || "UNKNOWN",
       businessArea: String(firstDefined(row, ["Business Process Area", "Business Area"]) ?? "").trim() || "General",
       criticality: normalizeCriticality(firstDefined(row, ["Business Criticality", "Criticality"])),

@@ -1,8 +1,14 @@
 import {
+  Avatar,
   Bar,
+  Breadcrumbs,
+  BreadcrumbsItem,
   Button,
   BusyIndicator,
   CheckBox,
+  DynamicPage,
+  DynamicPageHeader,
+  DynamicPageTitle,
   FlexBox,
   Label,
   MessageStrip,
@@ -18,9 +24,10 @@ import {
   WizardStep,
 } from "@ui5/webcomponents-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { LevelBadge, RiskBadge, StateBadge } from "../components/Badges";
+import { objectTypeLabel } from "../components/objectTypes";
 import { ProgramDetail } from "../types";
 
 const STEP_TITLES = ["Object intake", "ATC findings", "Propose & approve fix", "Results & audit log"] as const;
@@ -41,6 +48,7 @@ function stepForState(program: ProgramDetail): Step {
 
 export function ProgramDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [program, setProgram] = useState<ProgramDetail | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [comment, setComment] = useState("");
@@ -101,19 +109,65 @@ export function ProgramDetailPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: "2rem auto", padding: "0 1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <FlexBox justifyContent="SpaceBetween" alignItems="Center">
-        <Title level="H2">{program.name}</Title>
-        <FlexBox style={{ gap: "0.5rem" }}>
-          <StateBadge state={program.state} />
-          <LevelBadge level={program.worstExtensibilityLevel} />
-          <RiskBadge riskScore={program.riskScore} />
-        </FlexBox>
-      </FlexBox>
-      <Text>
-        Package {program.package} · {program.businessArea} · Criticality {program.criticality} · Owner {program.owner}
-      </Text>
-
+    <DynamicPage
+      headerTitle={
+        <DynamicPageTitle
+          breadcrumbs={
+            <Breadcrumbs>
+              <BreadcrumbsItem onClick={() => navigate("/")}>Programs</BreadcrumbsItem>
+              <BreadcrumbsItem>{program.name}</BreadcrumbsItem>
+            </Breadcrumbs>
+          }
+          header={<Title level="H2">{program.name}</Title>}
+          subHeader={<Label>{objectTypeLabel(program.objectType)}</Label>}
+          actions={
+            <FlexBox style={{ gap: "0.5rem" }}>
+              <StateBadge state={program.state} />
+              <LevelBadge level={program.worstExtensibilityLevel} />
+              <RiskBadge riskScore={program.riskScore} />
+            </FlexBox>
+          }
+        />
+      }
+      headerContent={
+        <DynamicPageHeader>
+          <FlexBox style={{ gap: "1.5rem", alignItems: "center", flexWrap: "wrap" }}>
+            <Avatar size="M" initials={program.name.slice(0, 2).toUpperCase()} colorScheme="Accent6" />
+            <div>
+              <Label>Package</Label>
+              <Text style={{ display: "block" }}>{program.package}</Text>
+            </div>
+            <div>
+              <Label>Business process area</Label>
+              <Text style={{ display: "block" }}>{program.businessArea}</Text>
+            </div>
+            <div>
+              <Label>Criticality</Label>
+              <Text style={{ display: "block" }}>{program.criticality}</Text>
+            </div>
+            <div>
+              <Label>Owner</Label>
+              <Text style={{ display: "block" }}>{program.owner}</Text>
+            </div>
+          </FlexBox>
+        </DynamicPageHeader>
+      }
+      footer={
+        <Bar
+          design="FloatingFooter"
+          startContent={
+            <Button disabled={viewStep <= 1} onClick={() => goToStep((viewStep - 1) as Step)}>
+              ← Back
+            </Button>
+          }
+          endContent={
+            <Button disabled={viewStep >= maxStep} onClick={() => goToStep((viewStep + 1) as Step)}>
+              Next →
+            </Button>
+          }
+        />
+      }
+    >
       {error && <MessageStrip design="Negative">{error}</MessageStrip>}
       {program.state === "ESCALATED" && (
         <MessageStrip design="Negative">
@@ -138,6 +192,7 @@ export function ProgramDetailPage() {
                   <Panel headerText="Object details">
                     <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                       <Text>Name: {program.name}</Text>
+                      <Text>Object type: {objectTypeLabel(program.objectType)}</Text>
                       <Text>Package: {program.package}</Text>
                       <Text>Business process area: {program.businessArea}</Text>
                       <Text>Criticality: {program.criticality}</Text>
@@ -448,22 +503,8 @@ export function ProgramDetailPage() {
         })}
       </Wizard>
 
-      <Bar
-        design="FloatingFooter"
-        startContent={
-          <Button disabled={viewStep <= 1} onClick={() => goToStep((viewStep - 1) as Step)}>
-            ← Back
-          </Button>
-        }
-        endContent={
-          <Button disabled={viewStep >= maxStep} onClick={() => goToStep((viewStep + 1) as Step)}>
-            Next →
-          </Button>
-        }
-      />
-
       <BusyIndicator active={busy} style={{ display: busy ? "block" : "none" }} />
-    </div>
+    </DynamicPage>
   );
 }
 

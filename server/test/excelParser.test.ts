@@ -24,6 +24,7 @@ describe("parseIntakeExcel", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({
       programName: "ZPROG1",
+      objectType: "PROGRAM",
       package: "ZPKG",
       businessArea: "Sales",
       criticality: "H",
