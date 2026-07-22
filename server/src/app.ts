@@ -40,6 +40,29 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Single-object entry, for the one-at-a-time wizard flow — same intake
+  // shape as an Excel row, without needing to build a spreadsheet for one
+  // program. Excel upload remains the bulk path.
+  app.post("/api/programs", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { programName, package: pkg, businessArea, criticality, owner } = req.body ?? {};
+      if (!programName || typeof programName !== "string") {
+        return res.status(400).json({ error: "programName is required" });
+      }
+      const row = {
+        programName,
+        package: pkg || "UNKNOWN",
+        businessArea: businessArea || "General",
+        criticality: ["H", "M", "L"].includes(criticality) ? criticality : "M",
+        owner: owner || "Unassigned",
+      };
+      const [program] = await orchestrator.ingest([row]);
+      res.status(201).json(program);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get("/api/programs", (_req, res) => {
     res.json(store.list().map(summarize));
   });

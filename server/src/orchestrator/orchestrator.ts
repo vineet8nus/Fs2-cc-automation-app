@@ -131,8 +131,33 @@ export class Orchestrator {
    */
   private async proposeRemediation(program: Program, sourceOverride?: string): Promise<Program> {
     const approved = program.findings.filter((f) => f.status === "approved");
+
+    // Verify any suggested replacement object actually exists BEFORE ever
+    // proposing a fix that references it — not just at write time. A
+    // finding whose replacement can't be confirmed is deferred rather than
+    // silently applied on a guess.
+    const verifiedFindings: Finding[] = [];
+    for (const f of approved) {
+      if (f.suggestedFix.replacementObject) {
+        const exists = await this.sap.objectExists(f.suggestedFix.replacementObject).catch(() => false);
+        if (!exists) {
+          f.status = "deferred";
+          audit(
+            program,
+            "RemediationAgent",
+            "replacement-object-not-found",
+            undefined,
+            undefined,
+            `${f.suggestedFix.replacementObject} does not exist or could not be confirmed — finding deferred, not auto-fixed`
+          );
+          continue;
+        }
+      }
+      verifiedFindings.push(f);
+    }
+
     const baseSource = sourceOverride ?? (await this.sap.readObjectSource(program.name)).source;
-    const remediation = runRemediation(baseSource, approved);
+    const remediation = runRemediation(baseSource, verifiedFindings);
 
     for (const id of remediation.appliedFindingIds) {
       const f = program.findings.find((x) => x.id === id);

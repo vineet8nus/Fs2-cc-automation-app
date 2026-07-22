@@ -39,3 +39,34 @@ describe("orchestrator resilience to unimplemented SapClient methods", () => {
     expect(store.get(program.id)?.state).toBe("ESCALATED");
   });
 });
+
+// A SapClient where every suggested replacement object fails existence
+// verification — simulates a fix proposing a CDS view/API that doesn't
+// actually exist in the target system.
+class NoObjectsExistSapClient extends MockSapClient implements SapClient {
+  async objectExists(): Promise<boolean> {
+    return false;
+  }
+}
+
+describe("orchestrator verifies replacement objects before proposing a fix", () => {
+  it("defers findings whose replacement object can't be confirmed, instead of proposing them", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new NoObjectsExistSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZNOOBJTEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    const findingsWithReplacement = program.findings.filter((f) => f.suggestedFix.replacementObject);
+    expect(findingsWithReplacement.length).toBeGreaterThan(0);
+
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
+
+    expect(proposed.state).toBe("AWAITING_FIX_REVIEW");
+    for (const f of findingsWithReplacement) {
+      const updated = proposed.findings.find((x) => x.id === f.id);
+      expect(updated?.status).toBe("deferred");
+    }
+    expect(proposed.auditLog.some((a) => a.action === "replacement-object-not-found")).toBe(true);
+  });
+});

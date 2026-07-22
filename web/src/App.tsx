@@ -2,6 +2,7 @@ import { MessageStrip, ShellBar, ShellBarItem } from "@ui5/webcomponents-react";
 import { useEffect, useState } from "react";
 import { Route, Routes, useNavigate } from "react-router-dom";
 import { api } from "./api/client";
+import { NewProgramPage } from "./pages/NewProgramPage";
 import { ProgramDetailPage } from "./pages/ProgramDetailPage";
 import { ProgramListPage } from "./pages/ProgramListPage";
 import { RetroPage } from "./pages/RetroPage";
@@ -24,7 +25,8 @@ export function App() {
         secondaryTitle={`SHD200SYSTEM · client 200${isMock ? " · SIMULATED DATA" : ""}`}
         onLogoClick={() => navigate("/")}
       >
-        <ShellBarItem icon="upload-to-cloud" text="Upload" onClick={() => navigate("/")} />
+        <ShellBarItem icon="add" text="New object" onClick={() => navigate("/programs/new")} />
+        <ShellBarItem icon="upload-to-cloud" text="Bulk upload" onClick={() => navigate("/")} />
         <ShellBarItem icon="list" text="Programs" onClick={() => navigate("/programs")} />
         <ShellBarItem icon="bar-chart" text="Process retro" onClick={() => navigate("/retro")} />
       </ShellBar>
@@ -39,6 +41,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<UploadPage />} />
         <Route path="/programs" element={<ProgramListPage />} />
+        <Route path="/programs/new" element={<NewProgramPage />} />
         <Route path="/programs/:id" element={<ProgramDetailPage />} />
         <Route path="/retro" element={<RetroPage />} />
       </Routes>

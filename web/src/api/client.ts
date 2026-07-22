@@ -25,6 +25,15 @@ export const api = {
       await fetch("/api/programs/upload", { method: "POST", body: form })
     );
   },
+  async createProgram(row: { programName: string; package?: string; businessArea?: string; criticality?: "H" | "M" | "L"; owner?: string }) {
+    return json<ProgramDetail>(
+      await fetch("/api/programs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(row),
+      })
+    );
+  },
   async gate1(id: string, decision: "approve" | "reject" | "defer", approvedFindingIds?: string[], comment?: string) {
     return json<ProgramDetail>(
       await fetch(`/api/programs/${id}/gate1`, {
