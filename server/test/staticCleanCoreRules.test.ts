@@ -151,6 +151,21 @@ describe("runStaticAtcRules", () => {
     expect(findings).toHaveLength(0);
   });
 
+  it("regression: does not re-flag a CDS view a fix just switched TO as a new violation", () => {
+    // Live-tested bug: re-running this check against the post-fix source
+    // ("SELECT * FROM vbrk" -> "SELECT * FROM I_BillingDocument") flagged
+    // I_BillingDocument itself as an unfixed standard-table violation,
+    // since it doesn't start with Y/Z either — validation could never
+    // confirm a real fix actually cleared the finding.
+    const findings = runStaticAtcRules("SELECT * from I_BillingDocument INTO TABLE @DATA(lt_vbrk).");
+    expect(findings.some((f) => f.objectName.toUpperCase() === "I_BILLINGDOCUMENT")).toBe(false);
+  });
+
+  it("does not flag names following the released view naming convention generally", () => {
+    const findings = runStaticAtcRules("SELECT * FROM C_SomeConsumptionView INTO TABLE @DATA(lt).");
+    expect(findings).toHaveLength(0);
+  });
+
   it("flags obsolete REFRESH with a native quick fix", () => {
     const findings = runStaticAtcRules("REFRESH lt_data.");
     const finding = findings.find((f) => f.atcCheckId === "STATIC_OBSOLETE_STMT_REFRESH");

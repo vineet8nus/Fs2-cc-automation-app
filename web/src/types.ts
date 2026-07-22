@@ -7,6 +7,7 @@ export type WorkflowState =
   | "AWAITING_HUMAN_REVIEW_1"
   | "PARKED"
   | "REMEDIATING"
+  | "AWAITING_FIX_REVIEW"
   | "VALIDATING"
   | "ESCALATED"
   | "AWAITING_HUMAN_REVIEW_2"
@@ -110,6 +111,8 @@ export interface ProgramDetail extends ProgramSummary {
   dependencies: DependencyObject[];
   findings: Finding[];
   baselineTests?: { runAt: string; cases: TestCase[] };
+  baselineSource?: string;
+  proposedSource?: string;
   validationReport?: ValidationReport;
   gitBaseline?: GitBaseline;
   report?: { generatedAt: string; markdown: string };

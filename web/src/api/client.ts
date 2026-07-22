@@ -34,6 +34,15 @@ export const api = {
       })
     );
   },
+  async fixReview(id: string, decision: "approve" | "request_changes" | "reject", editedSource?: string, comment?: string) {
+    return json<ProgramDetail>(
+      await fetch(`/api/programs/${id}/fix-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, editedSource, comment }),
+      })
+    );
+  },
   async gate2(id: string, decision: "approve" | "request_changes", comment?: string) {
     return json<ProgramDetail>(
       await fetch(`/api/programs/${id}/gate2`, {

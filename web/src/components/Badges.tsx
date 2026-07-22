@@ -28,6 +28,7 @@ const STATE_LABEL: Record<WorkflowState, string> = {
   AWAITING_HUMAN_REVIEW_1: "Awaiting review (Gate 1)",
   PARKED: "Parked",
   REMEDIATING: "Remediating",
+  AWAITING_FIX_REVIEW: "Awaiting fix review",
   VALIDATING: "Validating",
   ESCALATED: "Escalated",
   AWAITING_HUMAN_REVIEW_2: "Awaiting review (Gate 2)",
@@ -41,6 +42,7 @@ const STATE_SCHEME: Partial<Record<WorkflowState, number>> = {
   ESCALATED: 6,
   DONE: 8,
   AWAITING_HUMAN_REVIEW_1: 2,
+  AWAITING_FIX_REVIEW: 2,
   AWAITING_HUMAN_REVIEW_2: 2,
 };
 

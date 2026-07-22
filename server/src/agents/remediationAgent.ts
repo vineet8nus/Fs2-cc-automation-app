@@ -52,6 +52,22 @@ export function runRemediation(source: string, findings: Finding[]): Remediation
     } else if (/REFRESH lt_mara\./i.test(newSource) && /REFRESH|obsolete/i.test(finding.message)) {
       newSource = newSource.replace(/REFRESH lt_mara\./i, "CLEAR lt_mara.");
       applied = true;
+    } else if (finding.suggestedFix.replacementObject) {
+      // Generic fallback for real-mode findings (RealAdtClient's
+      // staticCleanCoreRules), where finding.objectName is the actual
+      // table/object matched in the real source — not a fixed mock
+      // template, so no hardcoded regex above applies. A native_quick_fix
+      // with a known replacement is always a straightforward
+      // FROM/JOIN table-name swap; nothing here alters control flow.
+      const escaped = finding.objectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const swapped = newSource.replace(
+        new RegExp(`\\b(FROM|JOIN)\\s+${escaped}\\b`, "gi"),
+        (_match, keyword: string) => `${keyword} ${finding.suggestedFix.replacementObject}`
+      );
+      if (swapped !== newSource) {
+        newSource = swapped;
+        applied = true;
+      }
     }
 
     if (applied) {

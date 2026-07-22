@@ -29,12 +29,14 @@ export function ProgramDetailPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diff, setDiff] = useState<string>("");
+  const [editedSource, setEditedSource] = useState("");
 
   const load = useCallback(async () => {
     if (!id) return;
     const p = await api.getProgram(id);
     setProgram(p);
     setSelected(new Set(p.findings.filter((f) => f.status === "open").map((f) => f.id)));
+    if (p.state === "AWAITING_FIX_REVIEW") setEditedSource(p.proposedSource ?? "");
     if (p.gitBaseline?.fixBranch) {
       api.getDiff(id).then(setDiff).catch(() => undefined);
     }
@@ -222,6 +224,56 @@ export function ProgramDetailPage() {
                     onClick={() => runAction(() => api.gate1(program.id, "approve", Array.from(selected), comment))}
                   >
                     Approve {selected.size} finding(s) &amp; remediate
+                  </Button>
+                </FlexBox>
+              }
+            />
+          </div>
+        </Panel>
+      )}
+
+      {program.state === "AWAITING_FIX_REVIEW" && (
+        <Panel headerText="Fix review — approve to write &amp; activate on SHD200SYSTEM">
+          <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <MessageStrip design="Warning">
+              Approving writes this exact code to the real SAP system and activates it (attributed to the
+              destination's configured user). Review the proposed fix below — it's editable — before approving.
+            </MessageStrip>
+            <FlexBox style={{ gap: "1rem" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Label>Original (baseline)</Label>
+                <TextArea value={program.baselineSource ?? ""} readonly rows={22} style={{ width: "100%", fontFamily: "monospace", fontSize: "0.8rem" }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Label>Proposed fix (editable)</Label>
+                <TextArea
+                  value={editedSource}
+                  onInput={(e) => setEditedSource(e.target.value)}
+                  rows={22}
+                  style={{ width: "100%", fontFamily: "monospace", fontSize: "0.8rem" }}
+                />
+              </div>
+            </FlexBox>
+            <Label>Comment</Label>
+            <TextArea value={comment} onInput={(e) => setComment(e.target.value)} rows={2} />
+            <Bar
+              endContent={
+                <FlexBox style={{ gap: "0.5rem" }}>
+                  <Button design="Negative" disabled={busy} onClick={() => runAction(() => api.fixReview(program.id, "reject", undefined, comment))}>
+                    Reject / Park
+                  </Button>
+                  <Button
+                    disabled={busy}
+                    onClick={() => runAction(() => api.fixReview(program.id, "request_changes", undefined, comment))}
+                  >
+                    Request changes (regenerate)
+                  </Button>
+                  <Button
+                    design="Emphasized"
+                    disabled={busy || !editedSource}
+                    onClick={() => runAction(() => api.fixReview(program.id, "approve", editedSource, comment))}
+                  >
+                    Approve &amp; write to SAP
                   </Button>
                 </FlexBox>
               }

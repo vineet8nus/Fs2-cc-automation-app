@@ -52,7 +52,19 @@ const RELEASED_CDS_SUCCESSOR: Record<string, string> = {
   FAGLFLEXA: "I_GLAccountLineItem",
 };
 
+const RELEASED_SUCCESSOR_NAMES = new Set(Object.values(RELEASED_CDS_SUCCESSOR).map((n) => n.toUpperCase()));
+
 function isLikelyStandardTable(name: string): boolean {
+  // A prior real-mode run surfaced this the hard way: after fixing
+  // "SELECT * FROM vbrk" to "SELECT * FROM I_BillingDocument", re-running
+  // this same check flagged I_BillingDocument itself as an unfixed
+  // standard-table violation, since it doesn't start with Y/Z either —
+  // the fix would never be recognized as clean. Exclude names that are
+  // themselves a known released CDS successor (or follow the standard
+  // released-view naming convention, I_/C_) so a fix doesn't get
+  // re-flagged as the very violation it just resolved.
+  if (RELEASED_SUCCESSOR_NAMES.has(name.toUpperCase())) return false;
+  if (/^[ic]_/i.test(name)) return false;
   return !/^[YZ]/i.test(name) && /^[A-Z][A-Z0-9_]{2,}$/i.test(name);
 }
 
