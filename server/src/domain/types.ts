@@ -171,6 +171,8 @@ export interface Program {
    */
   proposedSource?: string;
   validationReport?: ValidationReport;
+  /** The real workbench transport request the human approver names at Gate 2 — captured, not merely a state label, since every fix eventually needs a transport (docs/design/clean-core-migration-design.md §6). */
+  transportNumber?: string;
   report?: TechSpecReport;
   remediationAttempts: number;
   createdAt: string;

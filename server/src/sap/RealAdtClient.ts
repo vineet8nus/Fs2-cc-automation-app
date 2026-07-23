@@ -2,6 +2,7 @@ import { executeHttpRequest } from "@sap-cloud-sdk/http-client";
 import { DependencyObject } from "../domain/types";
 import { AtcRawFinding, ObjectSource, SapClient, UnitTestCaseResult } from "./SapClient";
 import { extractDependencies, runStaticAtcRules } from "./staticCleanCoreRules";
+import { parseAtcWorklistFindings } from "./atcFindingClassifier";
 
 /**
  * Accumulates cookies and the CSRF token across an entire multi-request
@@ -114,15 +115,45 @@ export class RealAdtClient implements SapClient {
   }
 
   /**
-   * Real ATC on SAP BTP / central S/4HANA (`/atc/runs`-style endpoints,
-   * worklist XML) isn't wired up yet — this runs the static rule engine
-   * (see staticCleanCoreRules.ts) against the real source instead, so real
-   * programs get real findings now rather than waiting on the full ATC
-   * integration. `_objectNames` is accepted for interface parity with the
-   * mock client but isn't needed by the static engine.
+   * Real ATC via the same create-worklist -> run -> poll-worklist flow
+   * proven in triggerAtcRun, against `objectNames[0]` (the object this call
+   * is actually scoped to — see cleanCoreAnalysisAgent's call sites, always
+   * one conceptual object's own source per call, primary or a closure
+   * member). Falls back to the static rule engine (staticCleanCoreRules.ts)
+   * on ANY failure — confirmed necessary, not theoretical: the ATC RFC
+   * destination on this landscape is intentionally only kept up during
+   * business hours, so a night-time run must degrade gracefully rather than
+   * fail the whole analysis. The fallback's first finding is always a
+   * visible marker (not a silent substitution) so a report never looks like
+   * real ATC ran when it didn't.
    */
-  async runAtcCheck(_objectNames: string[], currentSource: string): Promise<AtcRawFinding[]> {
-    return runStaticAtcRules(currentSource);
+  async runAtcCheck(objectNames: string[], currentSource: string, objectType: "PROG" | "INCL" | "CLAS" = "PROG"): Promise<AtcRawFinding[]> {
+    const primaryName = objectNames[0];
+    if (!primaryName) return runStaticAtcRules(currentSource);
+
+    const collection = objectType === "CLAS" ? "oo/classes" : objectType === "INCL" ? "programs/includes" : "programs/programs";
+    const objectUri = `/sap/bc/adt/${collection}/${encodeURIComponent(primaryName.toLowerCase())}`;
+    const checkVariant = process.env.SAP_ATC_CHECK_VARIANT ?? "ZNUS_SCI_DEF_CENTRAL";
+
+    try {
+      const { worklistXml } = await this.triggerAtcRun(objectUri, checkVariant);
+      return parseAtcWorklistFindings(worklistXml);
+    } catch (err) {
+      const fallback = runStaticAtcRules(currentSource);
+      const reason = err instanceof Error ? err.message : String(err);
+      fallback.unshift({
+        atcCheckId: "SYSTEM_ATC_FALLBACK",
+        checkName: "Live ATC unavailable",
+        message: `Live ATC run against ${primaryName} failed (${reason}) — showing the static rule-engine approximation below instead of real ATC findings. Commonly happens outside business hours when the ATC RFC destination is intentionally offline.`,
+        objectName: primaryName,
+        priority: 4,
+        extensibilityLevel: "A",
+        fixOrigin: "none",
+        fixDescription: "Re-run analysis once the ATC RFC destination is back online (business hours) to get real findings.",
+        fixConfidence: "low",
+      });
+      return fallback;
+    }
   }
 
   /**

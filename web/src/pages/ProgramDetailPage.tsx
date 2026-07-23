@@ -10,6 +10,7 @@ import {
   DynamicPageHeader,
   DynamicPageTitle,
   FlexBox,
+  Input,
   Label,
   MessageStrip,
   Panel,
@@ -53,6 +54,7 @@ export function ProgramDetailPage() {
   const [program, setProgram] = useState<ProgramDetail | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [comment, setComment] = useState("");
+  const [transportNumber, setTransportNumber] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diff, setDiff] = useState<string>("");
@@ -468,6 +470,8 @@ export function ProgramDetailPage() {
                         <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                           <Label>Comment</Label>
                           <TextArea value={comment} onInput={(e) => setComment(e.target.value)} rows={2} />
+                          <Label required>Transport request</Label>
+                          <Input value={transportNumber} onInput={(e) => setTransportNumber(e.target.value)} placeholder="e.g. SHDK900123" />
                           <Bar
                             endContent={
                               <FlexBox style={{ gap: "0.5rem" }}>
@@ -478,7 +482,11 @@ export function ProgramDetailPage() {
                                 >
                                   Request changes
                                 </Button>
-                                <Button design="Emphasized" disabled={busy} onClick={() => runAction(() => api.gate2(program.id, "approve", comment))}>
+                                <Button
+                                  design="Emphasized"
+                                  disabled={busy || !transportNumber.trim()}
+                                  onClick={() => runAction(() => api.gate2(program.id, "approve", comment, transportNumber.trim()))}
+                                >
                                   Approve &amp; merge → transport
                                 </Button>
                               </FlexBox>

@@ -55,7 +55,13 @@ export interface SapClient {
    * pattern is no longer present, instead of returning static random data
    * regardless of what Remediation changed.
    */
-  runAtcCheck(objectNames: string[], currentSource: string): Promise<AtcRawFinding[]>;
+  /**
+   * `objectType` is optional and additive, same convention as
+   * readObjectSource's — omitting it preserves existing call-site behavior.
+   * RealAdtClient needs it to build the correct ADT collection (programs,
+   * includes, classes) for a real ATC run against `objectNames[0]`.
+   */
+  runAtcCheck(objectNames: string[], currentSource: string, objectType?: "PROG" | "INCL" | "CLAS"): Promise<AtcRawFinding[]>;
   runAbapUnit(programName: string): Promise<UnitTestCaseResult[]>;
   syntaxCheckAndActivate(
     objectName: string,

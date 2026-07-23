@@ -23,6 +23,7 @@ export function generateReport(program: Program): TechSpecReport {
   lines.push(`**Owner:** ${program.owner}  `);
   lines.push(`**Worst extensibility level found:** ${program.worstExtensibilityLevel ?? "N/A"}  `);
   lines.push(`**Risk score:** ${program.riskScore?.total ?? "N/A"} (${program.riskScore?.band ?? "N/A"})  `);
+  lines.push(`**Transport:** ${program.transportNumber ?? "N/A"}  `);
   lines.push("");
 
   lines.push("## Findings & fixes");

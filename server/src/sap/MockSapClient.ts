@@ -122,7 +122,7 @@ export class MockSapClient implements SapClient {
     return deps;
   }
 
-  async runAtcCheck(objectNames: string[], currentSource: string): Promise<AtcRawFinding[]> {
+  async runAtcCheck(objectNames: string[], currentSource: string, _objectType?: "PROG" | "INCL" | "CLAS"): Promise<AtcRawFinding[]> {
     const programName = objectNames[0] ?? "UNKNOWN";
     return CATALOG.filter((rule) => rule.matchPattern.test(currentSource)).map((rule) => {
       const priority = rule.extensibilityLevel === "D" ? 1 : rule.extensibilityLevel === "C" ? 2 : 3;

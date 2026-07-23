@@ -64,10 +64,13 @@ describe("end-to-end mock workflow", () => {
 
     expect(fixReview.body.validationReport.overallPass).toBe(true);
 
-    const gate2 = await request(app).post(`/api/programs/${id}/gate2`).send({ decision: "approve", comment: "ship it" });
+    const gate2 = await request(app)
+      .post(`/api/programs/${id}/gate2`)
+      .send({ decision: "approve", comment: "ship it", transportNumber: "SHDK900001" });
     expect(gate2.status).toBe(200);
     expect(gate2.body.state).toBe("DONE");
     expect(gate2.body.gitBaseline.prState).toBe("merged");
+    expect(gate2.body.transportNumber).toBe("SHDK900001");
 
     const report = await request(app).get(`/api/programs/${id}/report`);
     expect(report.status).toBe(200);

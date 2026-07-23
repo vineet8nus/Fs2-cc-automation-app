@@ -38,8 +38,9 @@ function stripComments(source: string): string {
 
 // Known released CDS successors for common standard tables — used to offer
 // a native_quick_fix suggestion instead of a lower-confidence AI fix when a
-// direct, well-known mapping exists.
-const RELEASED_CDS_SUCCESSOR: Record<string, string> = {
+// direct, well-known mapping exists. Exported for reuse by
+// atcFindingClassifier.ts, which classifies real ATC findings the same way.
+export const RELEASED_CDS_SUCCESSOR: Record<string, string> = {
   MARA: "I_Product",
   MAKT: "I_ProductDescription",
   VBAK: "I_SalesOrder",

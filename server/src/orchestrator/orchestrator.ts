@@ -44,14 +44,19 @@ function moveTo(program: Program, to: WorkflowState, actor: string, action: stri
  * demo-mode artifact, not a real signal. Gating this to real mode keeps
  * every existing mock-mode test and demo behavior exactly as it was.
  */
-function resolveClosureObjects(dependencies: DependencyObject[], dependencySources: ObjectSource[]): { name: string; source: string }[] {
+function resolveClosureObjects(
+  dependencies: DependencyObject[],
+  dependencySources: ObjectSource[]
+): { name: string; source: string; type: "INCLUDE" | "CLASS" }[] {
   if ((process.env.SAP_INTEGRATION_MODE ?? "mock") !== "real") return [];
   const byName = new Map(dependencySources.map((s) => [s.name, s]));
   return dependencies
-    .filter((d) => (d.type === "INCLUDE" || d.type === "CLASS") && /^[YZ]/i.test(d.name))
-    .map((d) => byName.get(d.name))
-    .filter((s): s is ObjectSource => !!s && !s.source.startsWith("-- source not retrieved"))
-    .map((s) => ({ name: s.name, source: s.source }));
+    .filter((d): d is DependencyObject & { type: "INCLUDE" | "CLASS" } => (d.type === "INCLUDE" || d.type === "CLASS") && /^[YZ]/i.test(d.name))
+    .map((d) => {
+      const source = byName.get(d.name);
+      return source && !source.source.startsWith("-- source not retrieved") ? { name: source.name, source: source.source, type: d.type } : null;
+    })
+    .filter((s): s is { name: string; source: string; type: "INCLUDE" | "CLASS" } => !!s);
 }
 
 export class Orchestrator {
@@ -354,7 +359,12 @@ export class Orchestrator {
   }
 
   /** Human Gate 2: standard PR review — approve/merge, or request changes. */
-  async gate2Decision(programId: string, decision: "approve" | "request_changes", comment: string | undefined): Promise<Program> {
+  async gate2Decision(
+    programId: string,
+    decision: "approve" | "request_changes",
+    comment: string | undefined,
+    transportNumber?: string
+  ): Promise<Program> {
     const program = this.mustGet(programId);
     if (program.state !== "AWAITING_HUMAN_REVIEW_2") {
       throw new Error(`Program is in state ${program.state}, not awaiting Gate 2 review.`);
@@ -369,8 +379,16 @@ export class Orchestrator {
       return this.proposeRemediation(program);
     }
 
+    // A merged PR is only "ready for transport" (§6 of the design doc) once
+    // a real transport request is actually named — TRANSPORT_RELEASED was
+    // previously just a state label with no number ever captured.
+    if (!transportNumber || !transportNumber.trim()) {
+      throw new Error("A transport request number is required to approve Gate 2.");
+    }
+    program.transportNumber = transportNumber.trim();
+
     if (program.gitBaseline) program.gitBaseline.prState = "merged";
-    moveTo(program, "TRANSPORT_RELEASED", "human:gate2", "gate2-approve-merge", comment);
+    moveTo(program, "TRANSPORT_RELEASED", "human:gate2", "gate2-approve-merge", `TR ${program.transportNumber}${comment ? ` — ${comment}` : ""}`);
     moveTo(program, "DOCUMENTED", "ReportingAgent", "report-generated");
     program.report = generateReport(program);
     moveTo(program, "DONE", "system", "workflow-complete");

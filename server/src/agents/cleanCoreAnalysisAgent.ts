@@ -75,14 +75,16 @@ export async function runCleanCoreAnalysis(
   programName: string,
   programSource: ObjectSource,
   sap: SapClient,
-  closureObjects: { name: string; source: string }[] = []
+  closureObjects: { name: string; source: string; type: "INCLUDE" | "CLASS" }[] = []
 ): Promise<Finding[]> {
-  const atcFindings = await sap.runAtcCheck(objectNames, programSource.source);
+  const primaryAdtType = programSource.type === "CLAS" || programSource.type === "INCL" ? programSource.type : "PROG";
+  const atcFindings = await sap.runAtcCheck(objectNames, programSource.source, primaryAdtType);
   const customFindings = runCustomRules(programName, programSource.source);
   const findings = [...atcFindings, ...customFindings].map((f) => toFinding(f, programName));
 
   for (const obj of closureObjects) {
-    const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source);
+    const objAdtType = obj.type === "CLASS" ? "CLAS" : "INCL";
+    const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source, objAdtType);
     const objCustomFindings = runCustomRules(obj.name, obj.source);
     findings.push(...[...objAtcFindings, ...objCustomFindings].map((f) => toFinding(f, obj.name)));
   }

@@ -144,11 +144,11 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
 
   app.post("/api/programs/:id/gate2", async (req, res, next) => {
     try {
-      const { decision, comment } = req.body ?? {};
+      const { decision, comment, transportNumber } = req.body ?? {};
       if (!["approve", "request_changes"].includes(decision)) {
         return res.status(400).json({ error: "decision must be approve | request_changes" });
       }
-      const program = await orchestrator.gate2Decision(req.params.id, decision, comment);
+      const program = await orchestrator.gate2Decision(req.params.id, decision, comment, transportNumber);
       res.json(program);
     } catch (err) {
       next(err);

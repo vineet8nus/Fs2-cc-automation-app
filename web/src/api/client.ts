@@ -59,12 +59,12 @@ export const api = {
       })
     );
   },
-  async gate2(id: string, decision: "approve" | "request_changes", comment?: string) {
+  async gate2(id: string, decision: "approve" | "request_changes", comment?: string, transportNumber?: string) {
     return json<ProgramDetail>(
       await fetch(`/api/programs/${id}/gate2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, comment }),
+        body: JSON.stringify({ decision, comment, transportNumber }),
       })
     );
   },
