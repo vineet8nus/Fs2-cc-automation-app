@@ -337,22 +337,94 @@ export class RealAdtClient implements SapClient {
    * exists). Use writeAndActivateSource below to populate an existing shell
    * instead.
    */
-  static readonly CREATABLE_TYPES: Record<string, { creationPath: string; rootName: string; nameSpace: string }> = {
+  static readonly CREATABLE_TYPES: Record<string, { creationPath: string; rootName: string; nameSpace: string; extra?: string }> = {
     "CLAS/OC": { creationPath: "oo/classes", rootName: "class:abapClass", nameSpace: 'xmlns:class="http://www.sap.com/adt/oo/classes"' },
     "INTF/OI": { creationPath: "oo/interfaces", rootName: "intf:abapInterface", nameSpace: 'xmlns:intf="http://www.sap.com/adt/oo/interfaces"' },
     "TABL/DT": { creationPath: "ddic/tables", rootName: "blue:blueSource", nameSpace: 'xmlns:blue="http://www.sap.com/wbobj/blue"' },
     "DDLS/DF": { creationPath: "ddic/ddl/sources", rootName: "ddl:ddlSource", nameSpace: 'xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources"' },
     "SRVD/SRV": {
+      // extra is required — a real 400 ("Service Definition type '' does
+      // not exist") confirmed the type attribute must be set explicitly.
       creationPath: "ddic/srvd/sources",
       rootName: "srvd:srvdSource",
       nameSpace: 'xmlns:srvd="http://www.sap.com/adt/ddic/srvdsources"',
+      extra: 'srvd:srvdSourceType="S"',
     },
     "BDEF/BDO": {
+      // Confirmed against SHD200SYSTEM: the create-object body uses the
+      // same generic "blue" wrapper as TABL/DT, not a dedicated bdef
+      // namespace — a real 400 ("System expected the element blueSource")
+      // corrected this from an initial guess.
       creationPath: "bo/behaviordefinitions",
-      rootName: "bdef:behaviorDefinition",
-      nameSpace: 'xmlns:bdef="http://www.sap.com/adt/bo/behaviordefinitions"',
+      rootName: "blue:blueSource",
+      nameSpace: 'xmlns:blue="http://www.sap.com/wbobj/blue"',
     },
   };
+
+  /**
+   * Service bindings are a distinct protocol, not a variant of createObject:
+   * the create body embeds the service definition + binding version/type
+   * instead of a plain packageRef, and there's no editable source/main text
+   * — the binding activates directly like DDIC objects, via activateObjects.
+   * Body shape confirmed by reading an existing real V4 UI binding
+   * (ZEP_GL_POSTING_V4_WEB_API) on SHD200SYSTEM: srvb:services srvb:name is
+   * the *service definition's* name (not the binding's own name, which was
+   * my first, wrong guess), srvb:binding uses type="ODATA" version="V4"
+   * category="1".
+   */
+  async createServiceBinding(params: {
+    name: string;
+    packageName: string;
+    description: string;
+    serviceDefinitionName: string;
+    transportNumber: string;
+    responsible: string;
+  }): Promise<{ created: boolean; messages: string[] }> {
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<srvb:serviceBinding xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:description="${params.description}" adtcore:name="${params.name.toUpperCase()}" adtcore:type="SRVB/SVB" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="${params.responsible.toUpperCase()}">
+  <adtcore:packageRef adtcore:name="${params.packageName.toUpperCase()}"/>
+  <srvb:services srvb:name="${params.serviceDefinitionName.toUpperCase()}">
+    <srvb:content srvb:version="0001">
+      <srvb:serviceDefinition adtcore:name="${params.serviceDefinitionName.toUpperCase()}"/>
+    </srvb:content>
+  </srvb:services>
+  <srvb:binding srvb:category="1" srvb:type="ODATA" srvb:version="V4">
+    <srvb:implementation adtcore:name="${params.name.toUpperCase()}"/>
+  </srvb:binding>
+</srvb:serviceBinding>`;
+
+    try {
+      const createResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "post",
+          url: `/sap/bc/adt/businessservices/bindings?corrNr=${encodeURIComponent(params.transportNumber)}`,
+          data: body,
+          headers: { "Content-Type": "application/*", Accept: "application/*", ...session.headers(true) },
+        },
+        opts
+      );
+      messages.push(`HTTP ${createResponse.status}: created service binding ${params.name} in ${params.packageName}.`);
+      return { created: true, messages };
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown } };
+      messages.push(`Create failed: ${e.message ?? String(err)}`);
+      if (e.response) messages.push(`HTTP ${e.response.status}: ${String(e.response.data).slice(0, 800)}`);
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      throw err;
+    }
+  }
 
   async createObject(params: {
     objtype: keyof typeof RealAdtClient.CREATABLE_TYPES;
@@ -362,7 +434,7 @@ export class RealAdtClient implements SapClient {
     transportNumber: string;
     responsible: string;
   }): Promise<{ created: boolean; messages: string[] }> {
-    const { creationPath, rootName, nameSpace } = RealAdtClient.CREATABLE_TYPES[params.objtype];
+    const { creationPath, rootName, nameSpace, extra } = RealAdtClient.CREATABLE_TYPES[params.objtype];
     const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
     const session = new SapSession();
@@ -379,7 +451,9 @@ export class RealAdtClient implements SapClient {
     const body = `<?xml version="1.0" encoding="UTF-8"?>
 <${rootName} ${nameSpace} xmlns:adtcore="http://www.sap.com/adt/core" adtcore:description="${escape(
       params.description
-    )}" adtcore:name="${params.name.toUpperCase()}" adtcore:type="${params.objtype}" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="${params.responsible.toUpperCase()}">
+    )}" adtcore:name="${params.name.toUpperCase()}" adtcore:type="${params.objtype}" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="${params.responsible.toUpperCase()}"${
+      extra ? ` ${extra}` : ""
+    }>
   <adtcore:packageRef adtcore:name="${params.packageName.toUpperCase()}"/>
 </${rootName}>`;
 
@@ -414,8 +488,8 @@ export class RealAdtClient implements SapClient {
    * method is part of the SapClient interface other call sites depend on
    * unchanged.
    */
-  static collectionFor(objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF"): string {
-    return { CLAS: "oo/classes", INTF: "oo/interfaces", TABL: "ddic/tables", DDLS: "ddic/ddl/sources", BDEF: "bo/behaviordefinitions" }[objectType];
+  static collectionFor(objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF" | "SRVD" | "SRVB"): string {
+    return { CLAS: "oo/classes", INTF: "oo/interfaces", TABL: "ddic/tables", DDLS: "ddic/ddl/sources", BDEF: "bo/behaviordefinitions", SRVD: "ddic/srvd/sources", SRVB: "businessservices/bindings" }[objectType];
   }
 
   /**
@@ -472,7 +546,7 @@ ${refs.map((r) => `  <adtcore:objectReference adtcore:uri="${r.uri}" adtcore:nam
   /** Lock -> write -> unlock only, no activation — for objects that need a combined multi-object activate (see activateObjects). */
   async writeObjectSourceOnly(
     objectName: string,
-    objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF",
+    objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF" | "SRVD",
     source: string,
     transportNumber?: string
   ): Promise<{ written: boolean; messages: string[] }> {
@@ -547,7 +621,7 @@ ${refs.map((r) => `  <adtcore:objectReference adtcore:uri="${r.uri}" adtcore:nam
 
   async writeAndActivateObjectSource(
     objectName: string,
-    objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF",
+    objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF" | "SRVD",
     source: string,
     transportNumber?: string
   ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {

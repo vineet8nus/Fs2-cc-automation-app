@@ -289,11 +289,41 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   app.post("/api/diagnostics/write-object-source", async (req, res) => {
     const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
     const { objectName, objectType, source, transportNumber } = req.body ?? {};
-    if (!["CLAS", "INTF", "TABL", "DDLS", "BDEF"].includes(objectType))
+    if (!["CLAS", "INTF", "TABL", "DDLS", "BDEF", "SRVD"].includes(objectType))
       return res.status(400).json({ error: "objectType must be CLAS, INTF, TABL, or DDLS" });
     if (!objectName || !source) return res.status(400).json({ error: "objectName and source are required" });
     try {
       const result = await new RealAdtClient(destinationName).writeAndActivateObjectSource(objectName, objectType, source, transportNumber);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
+  // Service bindings are a distinct protocol from createObject — see
+  // RealAdtClient.createServiceBinding.
+  app.post("/api/diagnostics/create-service-binding", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { name, packageName, description, serviceDefinitionName, transportNumber, responsible } = req.body ?? {};
+    if (packageName !== "ZTEST_VK") return res.status(400).json({ error: "packageName must be ZTEST_VK" });
+    if (!name || !description || !serviceDefinitionName || !transportNumber)
+      return res.status(400).json({ error: "name, description, serviceDefinitionName, transportNumber are required" });
+    try {
+      const result = await new RealAdtClient(destinationName).createServiceBinding({
+        name,
+        packageName,
+        description,
+        serviceDefinitionName,
+        transportNumber,
+        responsible: responsible ?? "VINEET",
+      });
       res.json({ destinationName, ...result });
     } catch (err) {
       const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
@@ -312,7 +342,7 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   app.post("/api/diagnostics/write-object-source-only", async (req, res) => {
     const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
     const { objectName, objectType, source, transportNumber } = req.body ?? {};
-    if (!["CLAS", "INTF", "TABL", "DDLS", "BDEF"].includes(objectType))
+    if (!["CLAS", "INTF", "TABL", "DDLS", "BDEF", "SRVD"].includes(objectType))
       return res.status(400).json({ error: "objectType must be CLAS, INTF, TABL, or DDLS" });
     if (!objectName || !source) return res.status(400).json({ error: "objectName and source are required" });
     try {
