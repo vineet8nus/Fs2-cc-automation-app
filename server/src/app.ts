@@ -89,6 +89,26 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     res.type("text/plain").send(orchestrator.diff(req.params.id) || "No diff available yet.");
   });
 
+  // Read-only, on-demand source view for one of the program's own
+  // dependencies (an Include/Class) — this is what lets a reviewer see
+  // *why* a cross-object finding exists (docs/design/
+  // multi-object-dependency-remediation.md §3.2) when the Fix Review
+  // screen only shows the primary object's own (unfixable-for-that-
+  // finding) diff. Never used to write — read-only, real mode only, same
+  // as Phase 1's discovery-time closure resolution.
+  app.get("/api/programs/:id/dependency-source/:depName", async (req, res, next) => {
+    try {
+      const program = store.get(req.params.id);
+      if (!program) return res.status(404).json({ error: "Program not found" });
+      const dep = program.dependencies.find((d) => d.name === req.params.depName);
+      if (!dep) return res.status(404).json({ error: `${req.params.depName} is not a known dependency of ${program.name}` });
+      const result = await sap.readObjectSource(dep.name, dep.type);
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get("/api/programs/:id/report", (req, res) => {
     const program = store.get(req.params.id);
     if (!program) return res.status(404).json({ error: "Program not found" });

@@ -77,6 +77,11 @@ export const api = {
     const res = await fetch(`/api/programs/${id}/diff`);
     return res.text();
   },
+  async getDependencySource(id: string, depName: string) {
+    return json<{ name: string; type: string; source: string }>(
+      await fetch(`/api/programs/${id}/dependency-source/${encodeURIComponent(depName)}`)
+    );
+  },
   async retro() {
     return json<RetroMetrics>(await fetch("/api/retro"));
   },

@@ -378,6 +378,9 @@ export function ProgramDetailPage() {
                               .
                             </MessageStrip>
                           )}
+                          {crossObjectContainers(program).map((depName) => (
+                            <DependencySourcePanel key={depName} programId={program.id} depName={depName} />
+                          ))}
                           <FlexBox style={{ gap: "1rem" }}>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <Label>Diff (baseline → proposed) — red removed, green added</Label>
@@ -527,6 +530,46 @@ function ValidationRow({ label, pass }: { label: string; pass: boolean }) {
     <Text style={{ display: "block" }}>
       {pass ? "✅" : "❌"} {label}
     </Text>
+  );
+}
+
+// Distinct Include/Class objects that carry an approved finding but aren't
+// the primary object being migrated — the source panel lets a reviewer
+// actually see the code a deferred, cross-object finding refers to,
+// instead of only ever seeing the primary object's (unaffected) diff.
+function crossObjectContainers(program: ProgramDetail): string[] {
+  return Array.from(new Set(program.findings.filter((f) => f.containerObject !== program.name).map((f) => f.containerObject)));
+}
+
+function DependencySourcePanel({ programId, depName }: { programId: string; depName: string }) {
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getDependencySource(programId, depName)
+      .then((r) => {
+        if (!cancelled) setSource(r.source);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [programId, depName]);
+
+  return (
+    <Panel headerText={`Source of ${depName} (read-only — not the primary object; not written by this app yet)`} collapsed>
+      <div style={{ padding: "1rem" }}>
+        {error && <MessageStrip design="Negative">{error}</MessageStrip>}
+        {!error && source === null && <Text>Loading…</Text>}
+        {source !== null && (
+          <TextArea readonly value={source} rows={18} style={{ width: "100%", fontFamily: "monospace", fontSize: "0.8rem" }} />
+        )}
+      </div>
+    </Panel>
   );
 }
 
