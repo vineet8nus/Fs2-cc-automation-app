@@ -316,6 +316,189 @@ export class RealAdtClient implements SapClient {
   }
 
   /**
+   * Experimental: creates a brand-new INTF/CLAS object shell via ADT's
+   * object-creation protocol, then (optionally) writes real source into it
+   * and activates. Modeled directly on the `abap-adt-api` reference
+   * implementation's `CreatableTypes` table (objectcreator.ts) — same root
+   * element names, namespaces, creation paths, and the (surprising, but
+   * confirmed-working) generic wildcard Content-Type (see the request
+   * below), rather than a versioned media type. Not part of the SapClient
+   * interface; this is
+   * proving-ground code for the Clean Core Governance app objects
+   * (ZIF_ZCC_x / ZCL_ZCC_x) in package ZTEST_VK, same diagnostic-route
+   * pattern as triggerAtcRun.
+   *
+   * Note: `ZCL_ZCC_APPLOG` was independently created as an empty shell
+   * before this method existed (confirmed via ADT read — see chat), so
+   * calling this again for that exact name will fail (object already
+   * exists). Use writeAndActivateSource below to populate an existing shell
+   * instead.
+   */
+  async createObject(params: {
+    objtype: "CLAS/OC" | "INTF/OI";
+    name: string;
+    packageName: string;
+    description: string;
+    transportNumber: string;
+    responsible: string;
+  }): Promise<{ created: boolean; messages: string[] }> {
+    const creationPath = params.objtype === "CLAS/OC" ? "oo/classes" : "oo/interfaces";
+    const rootName = params.objtype === "CLAS/OC" ? "class:abapClass" : "intf:abapInterface";
+    const nameSpace =
+      params.objtype === "CLAS/OC"
+        ? 'xmlns:class="http://www.sap.com/adt/oo/classes"'
+        : 'xmlns:intf="http://www.sap.com/adt/oo/interfaces"';
+    const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<${rootName} ${nameSpace} xmlns:adtcore="http://www.sap.com/adt/core" adtcore:description="${escape(
+      params.description
+    )}" adtcore:name="${params.name.toUpperCase()}" adtcore:type="${params.objtype}" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="${params.responsible.toUpperCase()}">
+  <adtcore:packageRef adtcore:name="${params.packageName.toUpperCase()}"/>
+</${rootName}>`;
+
+    try {
+      const createResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "post",
+          url: `/sap/bc/adt/${creationPath}?corrNr=${encodeURIComponent(params.transportNumber)}`,
+          data: body,
+          headers: { "Content-Type": "application/*", Accept: "application/*", ...session.headers(true) },
+        },
+        opts
+      );
+      messages.push(`HTTP ${createResponse.status}: created ${params.objtype} ${params.name} in ${params.packageName}.`);
+      return { created: true, messages };
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown } };
+      messages.push(`Create failed: ${e.message ?? String(err)}`);
+      if (e.response) messages.push(`HTTP ${e.response.status}: ${String(e.response.data).slice(0, 800)}`);
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      throw err;
+    }
+  }
+
+  /**
+   * Generalization of syntaxCheckAndActivate's lock -> write -> unlock ->
+   * activate sequence to CLAS/INTF objects (not just PROG), for populating
+   * a just-created or existing empty Clean Core Governance app object
+   * (ZIF_ZCC_x / ZCL_ZCC_x) with real source. Kept as a separate method
+   * rather than widening syntaxCheckAndActivate's signature, since that
+   * method is part of the SapClient interface other call sites depend on
+   * unchanged.
+   */
+  async writeAndActivateObjectSource(
+    objectName: string,
+    objectType: "CLAS" | "INTF",
+    source: string,
+    transportNumber?: string
+  ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {
+    const encodedName = encodeURIComponent(objectName.toLowerCase());
+    const collection = objectType === "CLAS" ? "oo/classes" : "oo/interfaces";
+    const objectUri = `/sap/bc/adt/${collection}/${encodedName}`;
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const lockResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "post",
+        url: `${objectUri}?_action=LOCK&accessMode=MODIFY`,
+        headers: { Accept: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result2", ...session.headers(true) },
+      },
+      opts
+    );
+    session.absorb(lockResponse.headers);
+    const lockHandleMatch = String(lockResponse.data).match(/<LOCK_HANDLE>([^<]*)<\/LOCK_HANDLE>/);
+    const lockHandle = lockHandleMatch?.[1];
+    if (!lockHandle) {
+      messages.push(`Could not acquire a lock handle: ${String(lockResponse.data).slice(0, 300)}`);
+      return { syntaxOk: false, activated: false, messages };
+    }
+    messages.push(`Locked ${objectName} (handle acquired).`);
+
+    try {
+      const writeResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "put",
+          url: `${objectUri}/source/main?lockHandle=${encodeURIComponent(lockHandle)}${transportNumber ? `&corrNr=${encodeURIComponent(transportNumber)}` : ""}`,
+          data: source,
+          headers: { "Content-Type": "text/plain; charset=utf-8", ...session.headers(true) },
+        },
+        opts
+      );
+      session.absorb(writeResponse.headers);
+      messages.push("Source written (inactive version).");
+    } catch (err) {
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "post", url: `${objectUri}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`, headers: { ...session.headers(true) } },
+        opts
+      ).catch(() => undefined);
+      throw err;
+    }
+
+    const unlockResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "post", url: `${objectUri}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`, headers: { ...session.headers(true) } },
+      opts
+    ).catch((err) => {
+      messages.push(`Warning: unlock failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (unlockResponse) session.absorb(unlockResponse.headers);
+    messages.push(`Unlocked ${objectName}.`);
+
+    try {
+      const activationBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="${objectUri}" adtcore:name="${objectName.toUpperCase()}"/>
+</adtcore:objectReferences>`;
+      const activationResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "post",
+          url: "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+          data: activationBody,
+          headers: { "Content-Type": "application/xml", Accept: "application/xml", ...session.headers(true) },
+        },
+        opts
+      );
+      const activationXml = String(activationResponse.data);
+      const errorMessages = [...activationXml.matchAll(/type="[EA]"[^>]*>[\s\S]*?<[^:>]*:?shortText>([^<]*)</g)].map((m) => m[1]);
+      messages.push(...errorMessages);
+      const activated = errorMessages.length === 0;
+      messages.push(activated ? `${objectName} activated successfully.` : `Activation reported ${errorMessages.length} error(s).`);
+      return { syntaxOk: activated, activated, messages };
+    } catch (err) {
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      throw err;
+    }
+  }
+
+  /**
    * Confirms a replacement object (e.g. a released CDS view like
    * I_BillingDocument) genuinely exists in the repository, via ADT's
    * repository quick-search — a real check, not a name-format guess. A

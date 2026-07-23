@@ -242,6 +242,63 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Experimental object-creation route for the Clean Core Governance app
+  // (ZIF_ZCC_*/ZCL_ZCC_* in ZTEST_VK) — see RealAdtClient.createObject.
+  // Restricted to ZTEST_VK and CLAS/INTF so this can't become a general
+  // write-anywhere proxy; the transport number must be supplied explicitly
+  // by the caller (no default) since it's tied to a specific TR the human
+  // approved out-of-band.
+  app.post("/api/diagnostics/create-object", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { objtype, name, packageName, description, transportNumber, responsible } = req.body ?? {};
+    if (packageName !== "ZTEST_VK") return res.status(400).json({ error: "packageName must be ZTEST_VK" });
+    if (objtype !== "CLAS/OC" && objtype !== "INTF/OI") return res.status(400).json({ error: "objtype must be CLAS/OC or INTF/OI" });
+    if (!name || !description || !transportNumber) return res.status(400).json({ error: "name, description, transportNumber are required" });
+    try {
+      const result = await new RealAdtClient(destinationName).createObject({
+        objtype,
+        name,
+        packageName,
+        description,
+        transportNumber,
+        responsible: responsible ?? "VINEET",
+      });
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
+  // Companion to create-object: writes real source into a just-created (or
+  // pre-existing empty) CLAS/INTF shell and activates it. See
+  // RealAdtClient.writeAndActivateObjectSource.
+  app.post("/api/diagnostics/write-object-source", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { objectName, objectType, source, transportNumber } = req.body ?? {};
+    if (objectType !== "CLAS" && objectType !== "INTF") return res.status(400).json({ error: "objectType must be CLAS or INTF" });
+    if (!objectName || !source) return res.status(400).json({ error: "objectName and source are required" });
+    try {
+      const result = await new RealAdtClient(destinationName).writeAndActivateObjectSource(objectName, objectType, source, transportNumber);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
   // Serve the built frontend (see scripts/copy-frontend.js) if present —
   // absent in plain `npm run dev` where the Vite dev server handles the UI.
   const publicDir = path.join(__dirname, "public");
