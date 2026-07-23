@@ -1,4 +1,4 @@
-# Multi-Object Dependency-Aware Remediation — Design Document (v0.4, Phase 2 drafted)
+# Multi-Object Dependency-Aware Remediation — Design Document (v0.5, Phase 2 reviewed)
 
 Companion to `clean-core-migration-design.md`. That document assumes a "unit of
 work" is one ABAP object (a Program/Include). This document addresses what
@@ -563,7 +563,15 @@ eligible for **any** automated write (single-object or multi-object):
 8. Is the change in the "no mechanical fix" bucket (program generation,
    kernel calls, SAP-GUI-only statements)? → always manual, never auto-write.
 9. Is the node's `externalUsageCount` zero? If not → advisory-only in v1
-   (§3.4), re-checked immediately before write, not just at discovery.
+   (§3.4), re-checked immediately before write, not just at discovery. For
+   an Include (§9.3), this is a hard eligibility gate, not just a flag —
+   a non-exclusive Include never reaches the write step at all.
+10. (Added in §9.7, multi-object specific) Does the fix reference or need
+    to introduce any symbol (`TYPE`, `CONSTANT`, work area, field-symbol)
+    declared outside the container being fixed — e.g. a table's row type
+    declared in a different Include of the same program? If the fix can't
+    be verified as self-contained to its own container's source → manual,
+    `no-automated-fix`, never attempted per-container (§9.2).
 
 ## 5. What changed from v0.1 (summary for reviewers who read the first
 draft)
@@ -672,19 +680,23 @@ the write path at once.
   kind of scrutiny (and, if warranted, another expert review pass) as
   Phase 1 got before it starts.
 
-## 9. Phase 2 implementation spec (draft — pending its own review, v0.4)
+## 9. Phase 2 implementation spec (v0.5 — reviewed, PASS WITH CHANGES, incorporated)
 
 Prompted by a live test (Z_TEST_GST_REP1): once Phase 1 correctly attributed
 findings to an Include, the natural next question was "so was the Include
 actually changed, and if not, why not, and what's the design to change it?"
 This section answers that concretely, as the thing to build next — but per
 §0a it does not ship until it passes the same kind of review Phase 1 did.
+It has now had that review; the verdict was **PASS WITH CHANGES**, all of
+which are incorporated below (see §9.7 for the full list of what changed).
 
 **Scope, unchanged from §3.7's already-confirmed decision:** only the
-primary object's **own INCLUDE-type dependencies** become write-eligible.
-Shared Classes/Function Groups with external callers stay advisory-only —
-that boundary isn't moving. This phase is "finish what v1 already said was
-in scope," not a widening of scope.
+primary object's **own INCLUDE-type dependencies** become write-eligible —
+and, per the P0 correction in §9.7, only the subset of those that are
+genuinely exclusive to this one main program. Shared Classes/Function
+Groups (and now shared Includes too) with external callers stay
+advisory-only — that boundary isn't moving. This phase is "finish what v1
+already said was in scope," not a widening of scope.
 
 ### 9.1 Data model
 
@@ -692,99 +704,210 @@ in scope," not a widening of scope.
 
 - `proposedSource` (existing) keeps meaning "the primary object's proposed
   fix" — unchanged, so nothing that reads it today breaks.
-- New: `includeFixes: { name: string; baselineSource: string; proposedSource: string; status: "proposed" | "approved" | "written" | "reverted" }[]`
-  — one entry per own-Include that has at least one approved, mechanically-
-  fixable finding. Empty array is the common case (most programs have no
-  fixable Include-level finding) and behaves exactly like today.
+- New: `includeFixes: { name: string; baselineSource: string; proposedSource: string; externalUsageCount: number; status: "proposed" | "approved" | "written" | "reverted" }[]`
+  — one entry per own-Include that (a) has at least one approved,
+  mechanically-fixable finding, **and** (b) passed the exclusivity check in
+  §9.7 P0. Empty array is the common case (most programs have no
+  fixable, exclusive Include-level finding) and behaves exactly like today.
 
 ### 9.2 remediationAgent changes
 
 `runRemediation` currently takes one `(source, findings)` pair. Extend it
 to optionally process multiple `{ containerName, source, findings }`
-groups — one for the primary object (as today) and one per own-Include
-that has approved findings attributed to it. The existing fix logic
-(mock-template regexes, and the generic `FROM|JOIN <table>` swap for any
-finding with a `replacementObject`) applies per-group, matching only
-within that group's own source — this is what makes the Phase 1 fix
-(explicitly deferring cross-object findings before ever calling
-`runRemediation`) safe to relax: once an Include is a legitimate write
-target, its approved findings should be attempted using its *own* source,
-not silently deferred as "not the primary object" anymore. A finding still
-gets deferred if remediation can't mechanically apply it there (same
-`skippedFindingIds` path as today, same "no automated fix" audit trail) —
-that part of Phase 1 doesn't change, only the "which objects are attempted
-at all" boundary moves to include the primary object's own Includes.
+groups — one for the primary object (as today) and one per write-eligible
+Include that has approved findings attributed to it. The existing fix
+logic (mock-template regexes, and the generic `FROM|JOIN <table>` swap for
+any finding with a `replacementObject`) applies per-group, matching only
+within that group's own source.
+
+**Safety scope of per-container matching (corrected — see §9.7 P1):** this
+per-container isolation is sound **only** for a fix that is a pure textual
+substitution introducing no new symbol and referencing no symbol outside
+that container's own source — exactly what today's mechanical fixes are.
+It is explicitly **not** a general safety property. ABAP compiles a program
+and all its includes as one shared symbol table (a `TYPE`/`CONSTANT`/work
+area declared in a TOP include is visible in every other include of the
+same program) — a generator that only sees one include's text cannot see,
+reuse, or avoid colliding with symbols declared elsewhere in the same
+compilation unit. Concretely: if `SELECT … FROM ztable INTO TABLE gt_data`
+is rewritten to a CDS view but `gt_data`'s row type is declared in TOP as
+`STANDARD TABLE OF ztable`, the swap can activate cleanly (the syntax check
+doesn't know the CDS view's column layout differs) while silently changing
+runtime behavior — exactly the §0a top-priority risk. **Any finding whose
+fix would need to reference or introduce a symbol outside its own
+container's source must be deferred as `no-automated-fix`, never attempted
+per-container.** A new §4 checklist item (below) makes this an explicit,
+required check, not an implicit assumption.
+
+A finding still gets deferred if remediation can't mechanically apply it
+within its own container (same `skippedFindingIds` path as today, same
+"no automated fix" audit trail) — that part of Phase 1 doesn't change,
+only the "which objects are attempted at all" boundary widens to include
+the primary object's own, program-exclusive Includes.
 
 ### 9.3 Batch write sequence (implements §3.3, now for real)
 
 For a Migration Unit with `includeFixes` entries in `"approved"` status:
 
-1. Acquire locks on the primary object **and every approved Include fix**,
-   as one pre-flight step — fail the whole batch if any lock can't be
-   acquired (§3.3 step 1).
-2. Write every approved source (primary + includes) as inactive versions.
-   Nothing activates yet.
-3. Syntax-check the primary object with its Includes in context (an
-   Include's syntax check needs its main program specified — §3.3 step 3's
-   existing note applies directly here since these *are* that exact case).
-4. Mass-activate **exactly** the objects just written — primary + approved
+1. **Pre-flight eligibility gate (new, P0):** before any lock is attempted,
+   confirm every candidate Include is (a) a genuine program Include per its
+   `activationUnit` (§3.1) — not a function-group or class-internal include,
+   which activate via their container, not independently — and (b) has
+   `externalUsageCount === 0`, i.e. it is not also included by any other
+   main program. Fail either check and the Include drops to advisory-only,
+   exactly like a shared Class/Function Group under §3.4 — it never
+   reaches the lock/write step at all. This closes the gap the review
+   found: "own includes have no independent external usage" is true for
+   the *primary object itself* but was never actually true for a
+   *standalone Include*, which any developer can `INCLUDE` into more than
+   one program. Skipping this check would have silently reintroduced the
+   exact un-consented shared-client blast radius §3.4 exists to prevent.
+2. Acquire locks on the primary object **and every eligible, approved
+   Include fix**, as one pre-flight step — fail the whole batch if any
+   lock can't be acquired (§3.3 step 1).
+3. Write every approved source (primary + eligible includes) as inactive
+   versions. Nothing activates yet.
+4. Syntax-check the primary object with its Includes in context, against
+   the **inactive working versions just written, not the active ones**
+   (stated explicitly per the review — a check against the active version
+   would validate nothing). Because every eligible Include is now
+   confirmed program-exclusive (step 1), this is genuinely **one**
+   checkrun for the whole unit, not one per include — the exclusivity
+   check is exactly what makes that single-call simplification valid.
+5. Mass-activate **exactly** the objects just written — primary + eligible
    Includes, nothing else, per the user's explicit confirmation in §6.6.
    Treat the result as a per-object outcome list, not a single bit (§3.3).
-5. Recovery: any object that activated becomes `"written"`; any that
-   didn't gets its inactive version discarded and marked `"reverted"`
-   (nothing changed for it) — no forward-fix-back-to-baseline is needed
-   for those, since nothing left the inactive state. An object that *did*
+6. **Unlock every object that was locked in step 2, unconditionally** —
+   regardless of whether it activated, failed to activate, or was
+   reverted. (Correction from review: activation does not release a lock,
+   and discarding an inactive version does not release a lock either;
+   without an explicit unlock on every path, the happy path strands locks
+   on everything that *did* activate, and the failure path strands locks
+   on everything that was reverted. In a shared dev/test client a stranded
+   lock blocks another developer until someone finds it in SM12 — this is
+   not cosmetic.)
+7. Recovery: any object that activated becomes `"written"`. Any that
+   didn't gets its inactive version discarded and marked `"reverted"` —
+   nothing changed for it, no forward-fix needed. An object that *did*
    activate as part of a batch where another object in the same batch
-   failed is the one genuinely hard case (§3.3's "recovery is forward, not
-   discard" applies) — re-apply its Git baseline and re-activate to get
-   back to a fully consistent state across the whole unit, rather than
-   leaving the batch half-migrated.
-6. Re-run findings against the primary object and every written Include
+   failed is the hard case (§3.3's "recovery is forward, not discard"
+   applies): re-apply its Git baseline and re-activate to get back to a
+   fully consistent state across the whole unit. **New (from review): this
+   forward-recovery re-activation is itself a fallible activation, not a
+   guaranteed operation.** If it also fails, the Migration Unit enters an
+   explicit `INCONSISTENT` state naming exactly which object(s) are
+   live-changed and unreconciled, and escalates to a human immediately
+   (mirroring the existing single-object `ESCALATED` state) — it must
+   never be silently marked `reverted` when the reverting activation
+   itself didn't succeed.
+8. Re-run findings against the primary object and every written Include
    before Gate 2, not just the primary object (§3.3 step 6) — including
    the CDS-authorization and currency/unit spot-checks from §4 for any
    finding whose fix involved a CDS-view or BAPI substitution.
 
 ### 9.4 Fix Review UI (implements §3.6, now for real)
 
-One combined Gate, not per-object gates — an approver reviews and approves
-(or rejects/requests changes for) the whole Migration Unit's proposed
-changes in one action, the same trust model as today's single-object Fix
-Review, just wider:
+**One combined Gate — confirmed correct by review, with one addition.**
+The write is batch-atomic (one activation call, one transport, one
+compilation unit), so approval granularity should match write granularity:
+independently accepting one include's fix while rejecting the primary
+object's is incoherent, since functional equivalence (§0a) is a property
+of the *assembled* program, not any one include judged in isolation (an
+include's fix can't even be evaluated for correctness without the symbols
+its own main program's other includes declare — see §9.2). This closes
+§9.6 Q1 in favor of one combined Gate, not per-object sign-off.
+
+**Addition from review — per-object attention, not per-object approval:**
+a single Approve spanning several stacked diffs invites rubber-stamping —
+a bad fix buried in the third include's diff is easy to miss. Resolve this
+without breaking the atomic-approval correctness above: **the combined
+Approve action stays disabled until every write-eligible object's diff
+panel has been expanded at least once** (a lightweight "reviewed" flag per
+panel, cleared whenever that panel's proposed source is edited). This
+forces genuine per-object attention while keeping one atomic decision.
 
 - A tab or stacked-panel per write-eligible object (primary + each
-  approved Include), each with the same side-by-side colored diff (DiffView,
-  already built) and an editable proposed-source box, already proven UI.
+  eligible, approved Include), each with the same side-by-side colored
+  diff (DiffView, already built) and an editable proposed-source box,
+  already proven UI.
 - The existing "N approved finding(s) have no automated fix" notice stays,
   now scoped correctly: it lists findings that couldn't be mechanically
-  fixed *even within* their own container's source — not, as today, every
-  finding that merely lives outside the primary object.
-- Approve/Reject/Request-changes act on the whole unit at once, matching
-  §3.4's already-decided policy that shared dependencies never enter this
-  screen at all (they stay advisory, shown only in the read-only source
-  panel Phase 1 already shipped).
+  fixed *even within* their own container's source (§9.2) — not, as
+  today, every finding that merely lives outside the primary object.
+- A shared Include that failed the §9.3 step 1 exclusivity gate (or any
+  shared Class/Function Group) never enters this screen — it stays
+  advisory-only, shown only in the read-only source panel Phase 1 already
+  shipped, unchanged from §3.4's policy.
 
-### 9.5 Rollout checkpoint — before any live write test
+### 9.5 Rollout checkpoint — rehearse before any real write
 
-The first real end-to-end test of this — locking, writing, and activating
-an actual Include on SHD200SYSTEM — is a materially different risk than
-everything shipped so far (Phase 1 was read-only for Includes; this
-writes to one for the first time). Per this app's standing practice of
-checking before hard-to-reverse, real-system actions: **explicit
-confirmation is needed before the first live write-and-activate test
-against a real Include**, the same way earlier real-mode write-path work
-on the primary object was proven incrementally and reported back before
-being treated as done.
+**Strengthened per review.** The first real end-to-end test of this
+mechanism should not be its first exposure to failure. Before testing
+against any real Include with real findings:
 
-### 9.6 Open questions specific to this phase
+1. **Rehearse on a disposable, purpose-built throwaway Include first** —
+   a `Z…_PROBE` program + include created specifically for this, carrying
+   one known-mechanical finding. On it, deliberately exercise all three
+   paths, not just the happy one: (a) the normal lock → write → check →
+   activate → unlock → re-validate sequence, (b) a **forced partial-
+   activation failure** (e.g. hand-corrupt one object's inactive version
+   between write and activate) to prove step 7's forward-recovery actually
+   restores baseline *and* step 6 actually releases every lock, and (c) a
+   **forced mid-batch session drop** to prove orphan-lock cleanup actually
+   clears locks left behind. These recovery and lock-cleanup branches are
+   the least-tested code in this phase — rehearsing them on something
+   disposable is materially safer than their first real execution being
+   against a program with real callers in a shared client.
+2. Only after that rehearsal passes, get **explicit confirmation before
+   the first live write-and-activate test against a real Include** with
+   real findings — the same standing practice already used for the
+   primary-object write path, reported back before being treated as done.
+3. Before that first real write, also confirm the captured Git baseline
+   commit for the target actually exists (step 7's recovery depends on
+   it), and that the proposed diff against that baseline is *exactly* the
+   intended change — a guard against the regex touching more than
+   intended.
 
-1. One combined Gate (§9.4) vs. per-object approval — confirmed direction
-   is one combined Gate unless there's a reason to want per-object
-   sign-off; flagging in case that's wrong.
-2. Should `includeFixes` failing activation (§9.3 step 5, the "some
-   activated, some didn't" case) block Gate 2 entirely until resolved, or
-   allow proceeding with whatever subset succeeded? Leaning toward
-   blocking — a partially-migrated unit shouldn't reach "done" — but this
-   is a real design choice, not yet decided.
+### 9.6 Resolved and remaining open questions
+
+1. ~~One combined Gate vs. per-object approval~~ — **resolved (§9.4):** one
+   combined Gate, gated on per-object review-attention, not per-object
+   accept/reject.
+2. Should a Migration Unit that ends in the `INCONSISTENT` state (§9.3
+   step 7, forward-recovery itself failing) block Gate 2 entirely until a
+   human resolves it manually? Leaning toward yes — a partially-migrated,
+   unreconciled unit should never reach "done" — but this is a real design
+   choice, not yet decided.
+
+### 9.7 What changed in this review pass (v0.4 → v0.5)
+
+- **P0:** Include write-eligibility now requires `externalUsageCount === 0`
+  (§9.3 step 1) — closes a real gap where a standalone Include shared
+  across multiple main programs would have been written and activated
+  with no review from, or consent of, its other callers, silently
+  breaching the already-locked §3.4 shared-dependency policy.
+- **P1:** §9.3 now has explicit, unconditional unlock (step 6) on every
+  path — activation and inactive-version-discard were both previously
+  assumed, incorrectly, to release the lock.
+- **P1:** §9.2's per-container matching is now explicitly scoped to pure
+  textual substitutions with no cross-include symbol reference/
+  introduction; anything wider defers to `no-automated-fix` rather than
+  being attempted.
+- **P1:** §9.5 now requires rehearsal on a disposable throwaway Include —
+  including forced partial-failure and forced session-drop — before the
+  first real write test.
+- **P1:** §9.3 step 4 now states explicitly that the syntax check runs
+  against inactive versions and is a single call only because step 1's
+  exclusivity gate makes every eligible Include program-exclusive; §9.3
+  step 7 now defines an explicit `INCONSISTENT` escalation state for when
+  forward-recovery itself fails, instead of assuming it always succeeds.
+- **P1 (resolved §9.6 Q1):** kept one combined Gate, added a per-object
+  review-attention requirement so the atomic approval can't be rubber-
+  stamped past an unreviewed diff.
+- Confirmed: the `activationUnit` distinction from §3.1 (a function-group
+  or class-internal include activates via its container, not
+  independently) now explicitly gates Include write-eligibility in §9.3
+  step 1, alongside the exclusivity check.
 
 ## 10. Status
 
@@ -794,6 +917,9 @@ recorded as decisions above (v0.3, §6). Phase 1/1b shipped and verified
 live against SHD200SYSTEM (read-only Include/Class findings visibility,
 required package field, a real dependency-source viewer, and a false-
 positive fix to the rule engine found via that same live testing). Phase 2
-(§9, write-capable remediation for the primary object's own Includes) is
-drafted and pending its own expert review before any code changes to the
-write path — not yet started.
+(§9, write-capable remediation for the primary object's own Includes) has
+now also been reviewed — verdict **PASS WITH CHANGES**, all items
+incorporated (v0.5, see §9.7). Not yet implemented — no code changes to
+the write path have been made; implementation starts from this reviewed
+spec, with the §9.5 throwaway-Include rehearsal required before any real
+write test.
