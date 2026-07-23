@@ -192,7 +192,10 @@ export class RealAdtClient implements SapClient {
       {
         method: "get",
         url: `/sap/bc/adt/atc/worklists/${encodeURIComponent(worklistId)}?includeExemptedFindings=false`,
-        headers: { Accept: "application/xml", ...session.headers() },
+        // The generic "application/xml" Accept the original diagnostic used
+        // gets a 406 here — this resource only negotiates its own
+        // versioned media type, confirmed against SHD200SYSTEM.
+        headers: { Accept: "application/atc.worklist.v1+xml", ...session.headers() },
       },
       opts
     );
@@ -334,20 +337,32 @@ export class RealAdtClient implements SapClient {
    * exists). Use writeAndActivateSource below to populate an existing shell
    * instead.
    */
+  static readonly CREATABLE_TYPES: Record<string, { creationPath: string; rootName: string; nameSpace: string }> = {
+    "CLAS/OC": { creationPath: "oo/classes", rootName: "class:abapClass", nameSpace: 'xmlns:class="http://www.sap.com/adt/oo/classes"' },
+    "INTF/OI": { creationPath: "oo/interfaces", rootName: "intf:abapInterface", nameSpace: 'xmlns:intf="http://www.sap.com/adt/oo/interfaces"' },
+    "TABL/DT": { creationPath: "ddic/tables", rootName: "blue:blueSource", nameSpace: 'xmlns:blue="http://www.sap.com/wbobj/blue"' },
+    "DDLS/DF": { creationPath: "ddic/ddl/sources", rootName: "ddl:ddlSource", nameSpace: 'xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources"' },
+    "SRVD/SRV": {
+      creationPath: "ddic/srvd/sources",
+      rootName: "srvd:srvdSource",
+      nameSpace: 'xmlns:srvd="http://www.sap.com/adt/ddic/srvdsources"',
+    },
+    "BDEF/BDO": {
+      creationPath: "bo/behaviordefinitions",
+      rootName: "bdef:behaviorDefinition",
+      nameSpace: 'xmlns:bdef="http://www.sap.com/adt/bo/behaviordefinitions"',
+    },
+  };
+
   async createObject(params: {
-    objtype: "CLAS/OC" | "INTF/OI";
+    objtype: keyof typeof RealAdtClient.CREATABLE_TYPES;
     name: string;
     packageName: string;
     description: string;
     transportNumber: string;
     responsible: string;
   }): Promise<{ created: boolean; messages: string[] }> {
-    const creationPath = params.objtype === "CLAS/OC" ? "oo/classes" : "oo/interfaces";
-    const rootName = params.objtype === "CLAS/OC" ? "class:abapClass" : "intf:abapInterface";
-    const nameSpace =
-      params.objtype === "CLAS/OC"
-        ? 'xmlns:class="http://www.sap.com/adt/oo/classes"'
-        : 'xmlns:intf="http://www.sap.com/adt/oo/interfaces"';
+    const { creationPath, rootName, nameSpace } = RealAdtClient.CREATABLE_TYPES[params.objtype];
     const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
     const session = new SapSession();
@@ -399,15 +414,70 @@ export class RealAdtClient implements SapClient {
    * method is part of the SapClient interface other call sites depend on
    * unchanged.
    */
-  async writeAndActivateObjectSource(
+  static collectionFor(objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF"): string {
+    return { CLAS: "oo/classes", INTF: "oo/interfaces", TABL: "ddic/tables", DDLS: "ddic/ddl/sources", BDEF: "bo/behaviordefinitions" }[objectType];
+  }
+
+  /**
+   * Activates one or more objects in a single call — required when two
+   * objects reference each other (e.g. a RAP root's `composition of` and
+   * the child's matching `association to parent`): neither can activate
+   * alone since each references the other, confirmed against
+   * ZI_CC_Chg/ZI_CC_ChgItem on SHD200SYSTEM. ADT's activation endpoint
+   * accepts multiple objectReference entries in one POST for exactly this.
+   */
+  async activateObjects(refs: { uri: string; name: string }[]): Promise<{ activated: boolean; messages: string[] }> {
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const activationBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+${refs.map((r) => `  <adtcore:objectReference adtcore:uri="${r.uri}" adtcore:name="${r.name.toUpperCase()}"/>`).join("\n")}
+</adtcore:objectReferences>`;
+    const activationResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "post",
+        url: "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        data: activationBody,
+        headers: { "Content-Type": "application/xml", Accept: "application/xml", ...session.headers(true) },
+      },
+      opts
+    );
+    const activationXml = String(activationResponse.data);
+    const elementMatches = [...activationXml.matchAll(/type="[EA]"[^>]*>[\s\S]*?<[^:>]*:?shortText>([^<]*)</g)].map((m) => m[1]).filter(Boolean);
+    const msgBlockMatches = [...activationXml.matchAll(/<msg[^>]*type="[EA]"[^>]*>([\s\S]*?)<\/msg>/g)]
+      .flatMap((m) => [...m[1].matchAll(/<txt>([^<]*)<\/txt>/g)].map((t) => t[1]))
+      .filter(Boolean);
+    const errorMessages = elementMatches.length > 0 ? elementMatches : msgBlockMatches;
+    const hasErrorMarkers = /type="[EA]"/.test(activationXml);
+    if (errorMessages.length === 0 && hasErrorMarkers) {
+      messages.push(`Activation reported errors but they couldn't be parsed — raw response: ${activationXml.slice(0, 2000)}`);
+    } else {
+      messages.push(...errorMessages);
+    }
+    const activated = errorMessages.length === 0 && !hasErrorMarkers;
+    messages.push(activated ? `Activated: ${refs.map((r) => r.name).join(", ")}.` : `Activation reported ${errorMessages.length} error(s).`);
+    return { activated, messages };
+  }
+
+  /** Lock -> write -> unlock only, no activation — for objects that need a combined multi-object activate (see activateObjects). */
+  async writeObjectSourceOnly(
     objectName: string,
-    objectType: "CLAS" | "INTF",
+    objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF",
     source: string,
     transportNumber?: string
-  ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {
+  ): Promise<{ written: boolean; messages: string[] }> {
     const encodedName = encodeURIComponent(objectName.toLowerCase());
-    const collection = objectType === "CLAS" ? "oo/classes" : "oo/interfaces";
-    const objectUri = `/sap/bc/adt/${collection}/${encodedName}`;
+    const objectUri = `/sap/bc/adt/${RealAdtClient.collectionFor(objectType)}/${encodedName}`;
     const session = new SapSession();
     const opts = { fetchCsrfToken: false } as const;
     const messages: string[] = [];
@@ -433,7 +503,7 @@ export class RealAdtClient implements SapClient {
     const lockHandle = lockHandleMatch?.[1];
     if (!lockHandle) {
       messages.push(`Could not acquire a lock handle: ${String(lockResponse.data).slice(0, 300)}`);
-      return { syntaxOk: false, activated: false, messages };
+      return { written: false, messages };
     }
     messages.push(`Locked ${objectName} (handle acquired).`);
 
@@ -442,7 +512,9 @@ export class RealAdtClient implements SapClient {
         { destinationName: this.destinationName },
         {
           method: "put",
-          url: `${objectUri}/source/main?lockHandle=${encodeURIComponent(lockHandle)}${transportNumber ? `&corrNr=${encodeURIComponent(transportNumber)}` : ""}`,
+          url: `${objectUri}/source/main?lockHandle=${encodeURIComponent(lockHandle)}${
+            transportNumber ? `&corrNr=${encodeURIComponent(transportNumber)}` : ""
+          }`,
           data: source,
           headers: { "Content-Type": "text/plain; charset=utf-8", ...session.headers(true) },
         },
@@ -470,32 +542,20 @@ export class RealAdtClient implements SapClient {
     });
     if (unlockResponse) session.absorb(unlockResponse.headers);
     messages.push(`Unlocked ${objectName}.`);
+    return { written: true, messages };
+  }
 
-    try {
-      const activationBody = `<?xml version="1.0" encoding="UTF-8"?>
-<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="${objectUri}" adtcore:name="${objectName.toUpperCase()}"/>
-</adtcore:objectReferences>`;
-      const activationResponse = await executeHttpRequest(
-        { destinationName: this.destinationName },
-        {
-          method: "post",
-          url: "/sap/bc/adt/activation?method=activate&preauditRequested=true",
-          data: activationBody,
-          headers: { "Content-Type": "application/xml", Accept: "application/xml", ...session.headers(true) },
-        },
-        opts
-      );
-      const activationXml = String(activationResponse.data);
-      const errorMessages = [...activationXml.matchAll(/type="[EA]"[^>]*>[\s\S]*?<[^:>]*:?shortText>([^<]*)</g)].map((m) => m[1]);
-      messages.push(...errorMessages);
-      const activated = errorMessages.length === 0;
-      messages.push(activated ? `${objectName} activated successfully.` : `Activation reported ${errorMessages.length} error(s).`);
-      return { syntaxOk: activated, activated, messages };
-    } catch (err) {
-      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
-      throw err;
-    }
+  async writeAndActivateObjectSource(
+    objectName: string,
+    objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF",
+    source: string,
+    transportNumber?: string
+  ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {
+    const write = await this.writeObjectSourceOnly(objectName, objectType, source, transportNumber);
+    if (!write.written) return { syntaxOk: false, activated: false, messages: write.messages };
+    const objectUri = `/sap/bc/adt/${RealAdtClient.collectionFor(objectType)}/${encodeURIComponent(objectName.toLowerCase())}`;
+    const activate = await this.activateObjects([{ uri: objectUri, name: objectName }]);
+    return { syntaxOk: activate.activated, activated: activate.activated, messages: [...write.messages, ...activate.messages] };
   }
 
   /**

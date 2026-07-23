@@ -219,7 +219,12 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   app.get("/api/diagnostics/atc-trigger/:programName", async (req, res) => {
     const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
     const checkVariant = String(req.query.checkVariant ?? "ZNUS_SCI_DEF_CENTRAL");
-    const objectUri = `/sap/bc/adt/programs/programs/${encodeURIComponent(req.params.programName.toLowerCase())}`;
+    // objtype lets this diagnostic target CLAS/INTF objects too, not just
+    // PROG — the collection each lives under differs (oo/classes,
+    // oo/interfaces, programs/programs).
+    const objtype = String(req.query.objtype ?? "PROG");
+    const collection = objtype === "CLAS" ? "oo/classes" : objtype === "INTF" ? "oo/interfaces" : "programs/programs";
+    const objectUri = `/sap/bc/adt/${collection}/${encodeURIComponent(req.params.programName.toLowerCase())}`;
     try {
       const result = await new RealAdtClient(destinationName).triggerAtcRun(objectUri, checkVariant);
       res.json({ destinationName, checkVariant, objectUri, ...result });
@@ -243,16 +248,18 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   });
 
   // Experimental object-creation route for the Clean Core Governance app
-  // (ZIF_ZCC_*/ZCL_ZCC_* in ZTEST_VK) — see RealAdtClient.createObject.
-  // Restricted to ZTEST_VK and CLAS/INTF so this can't become a general
-  // write-anywhere proxy; the transport number must be supplied explicitly
-  // by the caller (no default) since it's tied to a specific TR the human
-  // approved out-of-band.
+  // (ZIF_ZCC_*/ZCL_ZCC_*/ZCC_*/ZI_CC_*/ZC_CC_* in ZTEST_VK) — see
+  // RealAdtClient.createObject. Restricted to ZTEST_VK and the types
+  // RealAdtClient knows how to build a creation body for, so this can't
+  // become a general write-anywhere proxy; the transport number must be
+  // supplied explicitly by the caller (no default) since it's tied to a
+  // specific TR the human approved out-of-band.
   app.post("/api/diagnostics/create-object", async (req, res) => {
     const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
     const { objtype, name, packageName, description, transportNumber, responsible } = req.body ?? {};
     if (packageName !== "ZTEST_VK") return res.status(400).json({ error: "packageName must be ZTEST_VK" });
-    if (objtype !== "CLAS/OC" && objtype !== "INTF/OI") return res.status(400).json({ error: "objtype must be CLAS/OC or INTF/OI" });
+    if (!Object.prototype.hasOwnProperty.call(RealAdtClient.CREATABLE_TYPES, objtype ?? ""))
+      return res.status(400).json({ error: `objtype must be one of ${Object.keys(RealAdtClient.CREATABLE_TYPES).join(", ")}` });
     if (!name || !description || !transportNumber) return res.status(400).json({ error: "name, description, transportNumber are required" });
     try {
       const result = await new RealAdtClient(destinationName).createObject({
@@ -282,10 +289,60 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   app.post("/api/diagnostics/write-object-source", async (req, res) => {
     const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
     const { objectName, objectType, source, transportNumber } = req.body ?? {};
-    if (objectType !== "CLAS" && objectType !== "INTF") return res.status(400).json({ error: "objectType must be CLAS or INTF" });
+    if (!["CLAS", "INTF", "TABL", "DDLS", "BDEF"].includes(objectType))
+      return res.status(400).json({ error: "objectType must be CLAS, INTF, TABL, or DDLS" });
     if (!objectName || !source) return res.status(400).json({ error: "objectName and source are required" });
     try {
       const result = await new RealAdtClient(destinationName).writeAndActivateObjectSource(objectName, objectType, source, transportNumber);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
+  // Write-only variant (no activation) for objects that need a combined
+  // multi-object activate — see RealAdtClient.writeObjectSourceOnly.
+  app.post("/api/diagnostics/write-object-source-only", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { objectName, objectType, source, transportNumber } = req.body ?? {};
+    if (!["CLAS", "INTF", "TABL", "DDLS", "BDEF"].includes(objectType))
+      return res.status(400).json({ error: "objectType must be CLAS, INTF, TABL, or DDLS" });
+    if (!objectName || !source) return res.status(400).json({ error: "objectName and source are required" });
+    try {
+      const result = await new RealAdtClient(destinationName).writeObjectSourceOnly(objectName, objectType, source, transportNumber);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
+  // Combined activation for objects that reference each other (RAP root
+  // composition <-> child to-parent association) — see
+  // RealAdtClient.activateObjects.
+  app.post("/api/diagnostics/activate-objects", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { refs } = req.body ?? {};
+    if (!Array.isArray(refs) || refs.length === 0) return res.status(400).json({ error: "refs must be a non-empty array of {objectName, objectType}" });
+    try {
+      const objectRefs = refs.map((r: { objectName: string; objectType: "CLAS" | "INTF" | "TABL" | "DDLS" }) => ({
+        uri: `/sap/bc/adt/${RealAdtClient.collectionFor(r.objectType)}/${encodeURIComponent(r.objectName.toLowerCase())}`,
+        name: r.objectName,
+      }));
+      const result = await new RealAdtClient(destinationName).activateObjects(objectRefs);
       res.json({ destinationName, ...result });
     } catch (err) {
       const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
