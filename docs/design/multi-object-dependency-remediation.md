@@ -1,4 +1,4 @@
-# Multi-Object Dependency-Aware Remediation — Design Document (v0.3, Finalized)
+# Multi-Object Dependency-Aware Remediation — Design Document (v0.4, Phase 2 drafted)
 
 Companion to `clean-core-migration-design.md`. That document assumes a "unit of
 work" is one ABAP object (a Program/Include). This document addresses what
@@ -672,10 +672,128 @@ the write path at once.
   kind of scrutiny (and, if warranted, another expert review pass) as
   Phase 1 got before it starts.
 
-## 8. Status
+## 9. Phase 2 implementation spec (draft — pending its own review, v0.4)
+
+Prompted by a live test (Z_TEST_GST_REP1): once Phase 1 correctly attributed
+findings to an Include, the natural next question was "so was the Include
+actually changed, and if not, why not, and what's the design to change it?"
+This section answers that concretely, as the thing to build next — but per
+§0a it does not ship until it passes the same kind of review Phase 1 did.
+
+**Scope, unchanged from §3.7's already-confirmed decision:** only the
+primary object's **own INCLUDE-type dependencies** become write-eligible.
+Shared Classes/Function Groups with external callers stay advisory-only —
+that boundary isn't moving. This phase is "finish what v1 already said was
+in scope," not a widening of scope.
+
+### 9.1 Data model
+
+`Program` gains, alongside the existing single-object fields:
+
+- `proposedSource` (existing) keeps meaning "the primary object's proposed
+  fix" — unchanged, so nothing that reads it today breaks.
+- New: `includeFixes: { name: string; baselineSource: string; proposedSource: string; status: "proposed" | "approved" | "written" | "reverted" }[]`
+  — one entry per own-Include that has at least one approved, mechanically-
+  fixable finding. Empty array is the common case (most programs have no
+  fixable Include-level finding) and behaves exactly like today.
+
+### 9.2 remediationAgent changes
+
+`runRemediation` currently takes one `(source, findings)` pair. Extend it
+to optionally process multiple `{ containerName, source, findings }`
+groups — one for the primary object (as today) and one per own-Include
+that has approved findings attributed to it. The existing fix logic
+(mock-template regexes, and the generic `FROM|JOIN <table>` swap for any
+finding with a `replacementObject`) applies per-group, matching only
+within that group's own source — this is what makes the Phase 1 fix
+(explicitly deferring cross-object findings before ever calling
+`runRemediation`) safe to relax: once an Include is a legitimate write
+target, its approved findings should be attempted using its *own* source,
+not silently deferred as "not the primary object" anymore. A finding still
+gets deferred if remediation can't mechanically apply it there (same
+`skippedFindingIds` path as today, same "no automated fix" audit trail) —
+that part of Phase 1 doesn't change, only the "which objects are attempted
+at all" boundary moves to include the primary object's own Includes.
+
+### 9.3 Batch write sequence (implements §3.3, now for real)
+
+For a Migration Unit with `includeFixes` entries in `"approved"` status:
+
+1. Acquire locks on the primary object **and every approved Include fix**,
+   as one pre-flight step — fail the whole batch if any lock can't be
+   acquired (§3.3 step 1).
+2. Write every approved source (primary + includes) as inactive versions.
+   Nothing activates yet.
+3. Syntax-check the primary object with its Includes in context (an
+   Include's syntax check needs its main program specified — §3.3 step 3's
+   existing note applies directly here since these *are* that exact case).
+4. Mass-activate **exactly** the objects just written — primary + approved
+   Includes, nothing else, per the user's explicit confirmation in §6.6.
+   Treat the result as a per-object outcome list, not a single bit (§3.3).
+5. Recovery: any object that activated becomes `"written"`; any that
+   didn't gets its inactive version discarded and marked `"reverted"`
+   (nothing changed for it) — no forward-fix-back-to-baseline is needed
+   for those, since nothing left the inactive state. An object that *did*
+   activate as part of a batch where another object in the same batch
+   failed is the one genuinely hard case (§3.3's "recovery is forward, not
+   discard" applies) — re-apply its Git baseline and re-activate to get
+   back to a fully consistent state across the whole unit, rather than
+   leaving the batch half-migrated.
+6. Re-run findings against the primary object and every written Include
+   before Gate 2, not just the primary object (§3.3 step 6) — including
+   the CDS-authorization and currency/unit spot-checks from §4 for any
+   finding whose fix involved a CDS-view or BAPI substitution.
+
+### 9.4 Fix Review UI (implements §3.6, now for real)
+
+One combined Gate, not per-object gates — an approver reviews and approves
+(or rejects/requests changes for) the whole Migration Unit's proposed
+changes in one action, the same trust model as today's single-object Fix
+Review, just wider:
+
+- A tab or stacked-panel per write-eligible object (primary + each
+  approved Include), each with the same side-by-side colored diff (DiffView,
+  already built) and an editable proposed-source box, already proven UI.
+- The existing "N approved finding(s) have no automated fix" notice stays,
+  now scoped correctly: it lists findings that couldn't be mechanically
+  fixed *even within* their own container's source — not, as today, every
+  finding that merely lives outside the primary object.
+- Approve/Reject/Request-changes act on the whole unit at once, matching
+  §3.4's already-decided policy that shared dependencies never enter this
+  screen at all (they stay advisory, shown only in the read-only source
+  panel Phase 1 already shipped).
+
+### 9.5 Rollout checkpoint — before any live write test
+
+The first real end-to-end test of this — locking, writing, and activating
+an actual Include on SHD200SYSTEM — is a materially different risk than
+everything shipped so far (Phase 1 was read-only for Includes; this
+writes to one for the first time). Per this app's standing practice of
+checking before hard-to-reverse, real-system actions: **explicit
+confirmation is needed before the first live write-and-activate test
+against a real Include**, the same way earlier real-mode write-path work
+on the primary object was proven incrementally and reported back before
+being treated as done.
+
+### 9.6 Open questions specific to this phase
+
+1. One combined Gate (§9.4) vs. per-object approval — confirmed direction
+   is one combined Gate unless there's a reason to want per-object
+   sign-off; flagging in case that's wrong.
+2. Should `includeFixes` failing activation (§9.3 step 5, the "some
+   activated, some didn't" case) block Gate 2 entirely until resolved, or
+   allow proceeding with whatever subset succeeded? Leaning toward
+   blocking — a partially-migrated unit shouldn't reach "done" — but this
+   is a real design choice, not yet decided.
+
+## 10. Status
 
 Reviewed by an ABAP/Clean-Core expert agent — verdict **PASS WITH CHANGES**,
 all items incorporated (v0.2). All open questions answered by the user and
-recorded as decisions above (v0.3, §6). Phase 1/1b (read-only visibility +
-required package field) is being implemented now; Phase 2 (write-capable
-multi-object remediation) is deliberately deferred to its own pass.
+recorded as decisions above (v0.3, §6). Phase 1/1b shipped and verified
+live against SHD200SYSTEM (read-only Include/Class findings visibility,
+required package field, a real dependency-source viewer, and a false-
+positive fix to the rule engine found via that same live testing). Phase 2
+(§9, write-capable remediation for the primary object's own Includes) is
+drafted and pending its own expert review before any code changes to the
+write path — not yet started.
