@@ -54,6 +54,32 @@ const RELEASED_CDS_SUCCESSOR: Record<string, string> = {
 
 const RELEASED_SUCCESSOR_NAMES = new Set(Object.values(RELEASED_CDS_SUCCESSOR).map((n) => n.toUpperCase()));
 
+// ABAP's own internal-variable naming convention — a 1-3 letter prefix plus
+// underscore (lt_/gt_/it_/et_/ct_/ls_/gs_/wa_/ty_/lv_/gv_/ro_/lo_/go_...) —
+// is how local tables, structures, and variables are named throughout real
+// ABAP code. None of SAP's actual standard DB tables or DDIC structures use
+// this convention (they're short mnemonic codes like MARA, VBAK, BSEG,
+// T001), so any name matching it is essentially certain to be a program's
+// own in-memory variable, not a persisted object needing a released-API
+// replacement. Caught live against a real program on SHD200SYSTEM
+// (Z_TEST_GST_REP1's C01 include) where this was missing: `DELETE
+// gt_components1 INDEX lv_col_cnt1.` — deleting a row from the program's
+// own internal table — was flagged as a "direct table write" needing a
+// BAPI, which makes no sense for a variable that was never in the database
+// to begin with.
+const LOCAL_VARIABLE_PREFIX = /^[a-z]{1,3}_/i;
+
+// Two more false positives caught in the same run: `MODIFY SCREEN.` is the
+// standard ABAP dynpro statement for controlling the current screen's field
+// attributes — SCREEN here is a reserved pseudo-structure, never a database
+// table, and is only ever used in this exact idiom. `DELETE ADJACENT
+// DUPLICATES FROM <itab> ...` is real ABAP syntax for de-duplicating rows
+// in an internal table — the generic "verb + next word" pattern below
+// mis-captures the syntax keyword ADJACENT (and would do the same for
+// DUPLICATES, though that never directly follows a write verb) as if it
+// were the object being written to.
+const NEVER_A_TABLE = new Set(["TABLE", "SCREEN", "ADJACENT", "DUPLICATES"]);
+
 function isLikelyStandardTable(name: string): boolean {
   // A prior real-mode run surfaced this the hard way: after fixing
   // "SELECT * FROM vbrk" to "SELECT * FROM I_BillingDocument", re-running
@@ -65,6 +91,8 @@ function isLikelyStandardTable(name: string): boolean {
   // re-flagged as the very violation it just resolved.
   if (RELEASED_SUCCESSOR_NAMES.has(name.toUpperCase())) return false;
   if (/^[ic]_/i.test(name)) return false;
+  if (LOCAL_VARIABLE_PREFIX.test(name)) return false;
+  if (NEVER_A_TABLE.has(name.toUpperCase())) return false;
   return !/^[YZ]/i.test(name) && /^[A-Z][A-Z0-9_]{2,}$/i.test(name);
 }
 
@@ -100,7 +128,7 @@ const RULES: Rule[] = [
     test: (source) =>
       [...source.matchAll(/\b(?:UPDATE|MODIFY|DELETE|INSERT)\s+([A-Za-z_][A-Za-z0-9_]*)/gi)]
         .map((m) => m[1])
-        .filter((n) => isLikelyStandardTable(n) && n.toUpperCase() !== "TABLE")
+        .filter(isLikelyStandardTable)
         .map((name) => ({ objectName: name })),
     fixFor: (name) => ({
       origin: "ai_generated",

@@ -125,6 +125,29 @@ describe("comment stripping (regression: real ZTEST_VK2 false positives)", () =>
   });
 });
 
+describe("internal-table and pseudo-keyword false positives (regression: real Z_TEST_GST_REP1_C01 include on SHD200SYSTEM)", () => {
+  it("does not flag MODIFY SCREEN as a direct table write — SCREEN is the dynpro field-attribute pseudo-structure, not a database table", () => {
+    const findings = runStaticAtcRules("MODIFY SCREEN.");
+    expect(findings.some((f) => f.atcCheckId === "STATIC_USAGE_API_WRITE_STD_TABLE")).toBe(false);
+  });
+
+  it("does not flag ADJACENT as a table from DELETE ADJACENT DUPLICATES FROM — that's fixed ABAP syntax for de-duplicating an internal table's rows, not a table name", () => {
+    const findings = runStaticAtcRules("DELETE ADJACENT DUPLICATES FROM lt_acdoca COMPARING prctr.");
+    const flagged = findings.filter((f) => f.atcCheckId === "STATIC_USAGE_API_WRITE_STD_TABLE").map((f) => f.objectName.toUpperCase());
+    expect(flagged).not.toContain("ADJACENT");
+  });
+
+  it("does not flag DELETE/MODIFY/INSERT/UPDATE on an internal table using ABAP's own lt_/gt_/it_ naming convention", () => {
+    const findings = runStaticAtcRules("DELETE gt_components1 INDEX lv_col_cnt1.");
+    expect(findings.some((f) => f.atcCheckId === "STATIC_USAGE_API_WRITE_STD_TABLE")).toBe(false);
+  });
+
+  it("still flags a real direct write to a standard table (UPDATE vbak)", () => {
+    const findings = runStaticAtcRules("UPDATE vbak SET netwr = 0 WHERE vbeln = '0000000001'.");
+    expect(findings.some((f) => f.atcCheckId === "STATIC_USAGE_API_WRITE_STD_TABLE" && f.objectName.toUpperCase() === "VBAK")).toBe(true);
+  });
+});
+
 describe("runStaticAtcRules", () => {
   it("flags the real unfiltered SELECT * FROM vbrk as a standard-table usage-of-APIs finding", () => {
     const findings = runStaticAtcRules(ZTEST_VK2_EXCERPT);
