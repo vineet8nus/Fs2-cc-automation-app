@@ -22,8 +22,18 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   app.use(cors());
   app.use(express.json());
 
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", sapIntegrationMode: process.env.SAP_INTEGRATION_MODE ?? "mock" });
+  app.get("/api/health", async (_req, res, next) => {
+    try {
+      const programCount = (await store.list()).length;
+      res.json({
+        status: "ok",
+        sapIntegrationMode: process.env.SAP_INTEGRATION_MODE ?? "mock",
+        storeType: store.constructor.name,
+        programCount,
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post("/api/programs/upload", upload.single("file"), async (req: Request, res: Response, next: NextFunction) => {
@@ -73,20 +83,44 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
-  app.get("/api/programs", (_req, res) => {
-    res.json(store.list().map(summarize));
+  app.get("/api/programs", async (_req, res, next) => {
+    try {
+      res.json((await store.list()).map(summarize));
+    } catch (err) {
+      next(err);
+    }
   });
 
-  app.get("/api/programs/:id", (req, res) => {
-    const program = store.get(req.params.id);
-    if (!program) return res.status(404).json({ error: "Program not found" });
-    res.json(program);
+  app.delete("/api/programs/:id", async (req, res, next) => {
+    try {
+      const program = await store.get(req.params.id);
+      if (!program) return res.status(404).json({ error: "Program not found" });
+      await store.delete(req.params.id);
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
   });
 
-  app.get("/api/programs/:id/diff", (req, res) => {
-    const program = store.get(req.params.id);
-    if (!program) return res.status(404).json({ error: "Program not found" });
-    res.type("text/plain").send(orchestrator.diff(req.params.id) || "No diff available yet.");
+  app.get("/api/programs/:id", async (req, res, next) => {
+    try {
+      const program = await store.get(req.params.id);
+      if (!program) return res.status(404).json({ error: "Program not found" });
+      res.json(program);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/programs/:id/diff", async (req, res, next) => {
+    try {
+      const program = await store.get(req.params.id);
+      if (!program) return res.status(404).json({ error: "Program not found" });
+      const diff = await orchestrator.diff(req.params.id);
+      res.type("text/plain").send(diff || "No diff available yet.");
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Read-only, on-demand source view for one of the program's own
@@ -98,7 +132,7 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   // as Phase 1's discovery-time closure resolution.
   app.get("/api/programs/:id/dependency-source/:depName", async (req, res, next) => {
     try {
-      const program = store.get(req.params.id);
+      const program = await store.get(req.params.id);
       if (!program) return res.status(404).json({ error: "Program not found" });
       const dep = program.dependencies.find((d) => d.name === req.params.depName);
       if (!dep) return res.status(404).json({ error: `${req.params.depName} is not a known dependency of ${program.name}` });
@@ -109,11 +143,15 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
-  app.get("/api/programs/:id/report", (req, res) => {
-    const program = store.get(req.params.id);
-    if (!program) return res.status(404).json({ error: "Program not found" });
-    if (!program.report) return res.status(409).json({ error: "Report not generated yet — program must reach DONE." });
-    res.type("text/markdown").send(program.report.markdown);
+  app.get("/api/programs/:id/report", async (req, res, next) => {
+    try {
+      const program = await store.get(req.params.id);
+      if (!program) return res.status(404).json({ error: "Program not found" });
+      if (!program.report) return res.status(409).json({ error: "Report not generated yet — program must reach DONE." });
+      res.type("text/markdown").send(program.report.markdown);
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post("/api/programs/:id/gate1", async (req, res, next) => {
@@ -155,8 +193,12 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
-  app.get("/api/retro", (_req, res) => {
-    res.json(computeRetroMetrics(store.list()));
+  app.get("/api/retro", async (_req, res, next) => {
+    try {
+      res.json(computeRetroMetrics(await store.list()));
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Isolated proof-of-connectivity route: always uses RealAdtClient against

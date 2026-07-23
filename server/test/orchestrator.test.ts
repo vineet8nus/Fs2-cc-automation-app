@@ -37,7 +37,7 @@ describe("orchestrator resilience to unimplemented SapClient methods", () => {
 
     // Re-fetching from the store must show the same resolved state, not a
     // program stuck mid-transition.
-    expect(store.get(program.id)?.state).toBe("ESCALATED");
+    expect((await store.get(program.id))?.state).toBe("ESCALATED");
   });
 });
 

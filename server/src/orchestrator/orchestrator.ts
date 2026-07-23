@@ -84,7 +84,7 @@ export class Orchestrator {
         auditLog: [],
       };
       audit(program, "system", "excel-intake", undefined, "UPLOADED", `Row: ${row.programName}`);
-      this.store.save(program);
+      await this.store.save(program);
 
       const isRealMode = (process.env.SAP_INTEGRATION_MODE ?? "mock") === "real";
       if (isRealMode && program.objectType !== "PROGRAM") {
@@ -95,7 +95,7 @@ export class Orchestrator {
           "object-type-not-supported",
           `${program.objectType} objects aren't read/written against the live system yet — only ABAP Programs/Includes are. Parked without touching SAP.`
         );
-        this.store.save(program);
+        await this.store.save(program);
         created.push(program);
         continue;
       }
@@ -104,7 +104,7 @@ export class Orchestrator {
         program = await this.runAutomaticPipeline(program);
       } catch (err) {
         audit(program, "system", "pipeline-error", program.state, program.state, String(err));
-        this.store.save(program);
+        await this.store.save(program);
       }
       created.push(program);
     }
@@ -116,12 +116,12 @@ export class Orchestrator {
     const discovery = await runDiscovery(program.name, this.sap);
     program.gitBaseline = runGitSync(program.name, discovery.programSource, discovery.dependencies, discovery.dependencySources);
     moveTo(program, "GIT_BASELINED", "GitSyncAgent", "baseline-snapshot", `commit ${program.gitBaseline.baselineCommit.slice(0, 10)}`);
-    this.store.save(program);
+    await this.store.save(program);
 
     program.baselineSource = discovery.programSource.source;
     program.dependencies = discovery.dependencies;
     moveTo(program, "DISCOVERED", "DiscoveryAgent", "dependency-graph-built", `${discovery.dependencies.length} dependent objects`);
-    this.store.save(program);
+    await this.store.save(program);
 
     const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
     const closureObjects = resolveClosureObjects(program.dependencies, discovery.dependencySources);
@@ -129,12 +129,12 @@ export class Orchestrator {
     program.worstExtensibilityLevel = worstExtensibilityLevel(program.findings);
     program.riskScore = computeRiskScore(program.findings, program.criticality, program.dependencies.length);
     moveTo(program, "ANALYZED", "CleanCoreAnalysisAgent", "atc-run-complete", `${program.findings.length} findings, risk ${program.riskScore.total} (${program.riskScore.band})`);
-    this.store.save(program);
+    await this.store.save(program);
 
     moveTo(program, "BASELINING_TESTS", "BaselineTestAgent", "baseline-test-run-start");
     program.baselineTests = await runBaselineTests(program.name, this.sap);
     moveTo(program, "AWAITING_HUMAN_REVIEW_1", "BaselineTestAgent", "baseline-captured", `${program.baselineTests.cases.length} test cases`);
-    this.store.save(program);
+    await this.store.save(program);
 
     return program;
   }
@@ -146,7 +146,7 @@ export class Orchestrator {
     approvedFindingIds: string[] | undefined,
     comment: string | undefined
   ): Promise<Program> {
-    const program = this.mustGet(programId);
+    const program = await this.mustGet(programId);
     if (program.state !== "AWAITING_HUMAN_REVIEW_1") {
       throw new Error(`Program is in state ${program.state}, not awaiting Gate 1 review.`);
     }
@@ -154,7 +154,7 @@ export class Orchestrator {
     if (decision !== "approve") {
       for (const f of program.findings) f.status = "deferred";
       moveTo(program, "PARKED", "human:gate1", `gate1-${decision}`, comment);
-      this.store.save(program);
+      await this.store.save(program);
       return program;
     }
 
@@ -166,7 +166,7 @@ export class Orchestrator {
       for (const t of program.baselineTests.cases) t.humanConfirmed = true;
     }
     moveTo(program, "REMEDIATING", "human:gate1", "gate1-approve", comment ?? `${idsToApprove.size} finding(s) approved for remediation`);
-    this.store.save(program);
+    await this.store.save(program);
 
     return this.proposeRemediation(program);
   }
@@ -266,7 +266,7 @@ export class Orchestrator {
       remediation.changeLog.join("; ") || "no automated changes applied"
     );
     moveTo(program, "AWAITING_FIX_REVIEW", "RemediationAgent", "fix-proposed", `PR ${program.gitBaseline.prUrl}`);
-    this.store.save(program);
+    await this.store.save(program);
     return program;
   }
 
@@ -283,7 +283,7 @@ export class Orchestrator {
     editedSource: string | undefined,
     comment: string | undefined
   ): Promise<Program> {
-    const program = this.mustGet(programId);
+    const program = await this.mustGet(programId);
     if (program.state !== "AWAITING_FIX_REVIEW") {
       throw new Error(`Program is in state ${program.state}, not awaiting fix review.`);
     }
@@ -291,14 +291,14 @@ export class Orchestrator {
     if (decision === "reject") {
       for (const f of program.findings.filter((x) => x.status === "fixed")) f.status = "approved";
       moveTo(program, "PARKED", "human:fix-review", "fix-review-reject", comment);
-      this.store.save(program);
+      await this.store.save(program);
       return program;
     }
 
     if (decision === "request_changes") {
       for (const f of program.findings.filter((x) => x.status === "fixed")) f.status = "approved";
       moveTo(program, "REMEDIATING", "human:fix-review", "fix-review-request-changes", comment);
-      this.store.save(program);
+      await this.store.save(program);
       return this.proposeRemediation(program);
     }
 
@@ -311,7 +311,7 @@ export class Orchestrator {
       program.gitBaseline = commitRemediation(program.name, program.gitBaseline, editedSource, "human-edited fix before write approval");
     }
     moveTo(program, "VALIDATING", "human:fix-review", "fix-review-approve-write", comment);
-    this.store.save(program);
+    await this.store.save(program);
     return this.validateAndFinish(program, finalSource);
   }
 
@@ -336,25 +336,25 @@ export class Orchestrator {
       // rather than letting the exception bubble out of an already-
       // persisted state transition.
       moveTo(program, "ESCALATED", "ValidationAgent", "validation-error", err instanceof Error ? err.message : String(err));
-      this.store.save(program);
+      await this.store.save(program);
       return program;
     }
 
     if (program.validationReport.overallPass) {
       for (const f of fixedFindings) f.status = "validated";
       moveTo(program, "AWAITING_HUMAN_REVIEW_2", "ValidationAgent", "validation-passed");
-      this.store.save(program);
+      await this.store.save(program);
       return program;
     }
 
     if (program.remediationAttempts >= MAX_REMEDIATION_ATTEMPTS) {
       moveTo(program, "ESCALATED", "ValidationAgent", "validation-failed-escalated", program.validationReport.messages.join("; "));
-      this.store.save(program);
+      await this.store.save(program);
       return program;
     }
 
     moveTo(program, "REMEDIATING", "ValidationAgent", "validation-failed-retry", program.validationReport.messages.join("; "));
-    this.store.save(program);
+    await this.store.save(program);
     return this.proposeRemediation(program, finalSource);
   }
 
@@ -365,7 +365,7 @@ export class Orchestrator {
     comment: string | undefined,
     transportNumber?: string
   ): Promise<Program> {
-    const program = this.mustGet(programId);
+    const program = await this.mustGet(programId);
     if (program.state !== "AWAITING_HUMAN_REVIEW_2") {
       throw new Error(`Program is in state ${program.state}, not awaiting Gate 2 review.`);
     }
@@ -375,7 +375,7 @@ export class Orchestrator {
       program.gitBaseline.prState = "changes_requested";
       for (const f of program.findings.filter((x) => x.status === "validated")) f.status = "approved";
       moveTo(program, "REMEDIATING", "human:gate2", "gate2-request-changes", comment);
-      this.store.save(program);
+      await this.store.save(program);
       return this.proposeRemediation(program);
     }
 
@@ -392,18 +392,18 @@ export class Orchestrator {
     moveTo(program, "DOCUMENTED", "ReportingAgent", "report-generated");
     program.report = generateReport(program);
     moveTo(program, "DONE", "system", "workflow-complete");
-    this.store.save(program);
+    await this.store.save(program);
     return program;
   }
 
-  diff(programId: string): string {
-    const program = this.mustGet(programId);
+  async diff(programId: string): Promise<string> {
+    const program = await this.mustGet(programId);
     if (!program.gitBaseline) return "";
     return diffAgainstBaseline(program.name, program.gitBaseline);
   }
 
-  private mustGet(programId: string): Program {
-    const program = this.store.get(programId);
+  private async mustGet(programId: string): Promise<Program> {
+    const program = await this.store.get(programId);
     if (!program) throw new Error(`Program ${programId} not found`);
     return program;
   }
