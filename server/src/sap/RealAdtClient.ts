@@ -426,6 +426,54 @@ export class RealAdtClient implements SapClient {
     }
   }
 
+  /**
+   * A service binding activating (adtcore:version="active") does not, by
+   * itself, register the runtime OData V4 endpoint — confirmed against
+   * SHD200SYSTEM: /sap/bc/adt/businessservices/odatav4/ZUI_CC_GOVERNANCE
+   * still showed odatav4:published="false" odatav4:created="false" after
+   * ZUI_CC_GOVERNANCE activated. That needs this separate publish-job POST.
+   * Body shape unverified/experimental until tried — no existing reference
+   * for it the way the binding body had a real example to read.
+   */
+  async publishODataV4Service(serviceName: string): Promise<{ published: boolean; messages: string[] }> {
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/businessservices/bindings/${serviceName.toLowerCase()}" adtcore:name="${serviceName.toUpperCase()}"/>
+</adtcore:objectReferences>`;
+
+    try {
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "post",
+          url: "/sap/bc/adt/businessservices/odatav4/publishjobs",
+          data: body,
+          headers: { "Content-Type": "application/*", Accept: "application/*", ...session.headers(true) },
+        },
+        opts
+      );
+      messages.push(`HTTP ${response.status}: publish job response: ${String(response.data).slice(0, 800)}`);
+      return { published: true, messages };
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown } };
+      messages.push(`Publish failed: ${e.message ?? String(err)}`);
+      if (e.response) messages.push(`HTTP ${e.response.status}: ${String(e.response.data).slice(0, 800)}`);
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      throw err;
+    }
+  }
+
   async createObject(params: {
     objtype: keyof typeof RealAdtClient.CREATABLE_TYPES;
     name: string;

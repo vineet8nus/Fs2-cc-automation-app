@@ -283,6 +283,27 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Publishes an OData V4 service binding's runtime endpoint — a separate
+  // step from binding activation. See RealAdtClient.publishODataV4Service.
+  app.post("/api/diagnostics/publish-odata-v4", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { serviceName } = req.body ?? {};
+    if (!serviceName) return res.status(400).json({ error: "serviceName is required" });
+    try {
+      const result = await new RealAdtClient(destinationName).publishODataV4Service(serviceName);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
   // Companion to create-object: writes real source into a just-created (or
   // pre-existing empty) CLAS/INTF shell and activates it. See
   // RealAdtClient.writeAndActivateObjectSource.
