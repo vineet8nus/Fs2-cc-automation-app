@@ -187,7 +187,7 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   // shapes (e.g. the ADT discovery document, ATC check variants) against
   // SHD200SYSTEM without risking a write. Not a general-purpose proxy.
   app.get("/api/diagnostics/adt-raw", async (req, res) => {
-    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const destinationName = String(req.query.destinationName ?? process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM");
     const path = String(req.query.path ?? "");
     if (!path.startsWith("/sap/bc/adt")) {
       return res.status(400).json({ error: "path must start with /sap/bc/adt" });
@@ -196,6 +196,36 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
       const response = await executeHttpRequest(
         { destinationName },
         { method: "get", url: path, headers: { Accept: "application/xml, text/plain, */*" } },
+        { fetchCsrfToken: false }
+      );
+      res.type("text/plain").send(typeof response.data === "string" ? response.data : JSON.stringify(response.data));
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; cause?: { message?: string } };
+      res.status(502).json({
+        destinationName,
+        path,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        cause: e.cause?.message,
+      });
+    }
+  });
+
+  // GET-only runtime OData V4 explorer — same read-only-proxy pattern as
+  // adt-raw, just scoped to /sap/opu/odata4 instead of /sap/bc/adt, to
+  // confirm a just-published service binding's actual runtime endpoint
+  // (metadata, entity sets) rather than only its ADT repository status.
+  app.get("/api/diagnostics/odata-raw", async (req, res) => {
+    const destinationName = String(req.query.destinationName ?? process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM");
+    const path = String(req.query.path ?? "");
+    if (!path.startsWith("/sap/opu/odata4")) {
+      return res.status(400).json({ error: "path must start with /sap/opu/odata4" });
+    }
+    try {
+      const response = await executeHttpRequest(
+        { destinationName },
+        { method: "get", url: path, headers: { Accept: "application/xml, application/json, */*" } },
         { fetchCsrfToken: false }
       );
       res.type("text/plain").send(typeof response.data === "string" ? response.data : JSON.stringify(response.data));
@@ -286,7 +316,12 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   // Publishes an OData V4 service binding's runtime endpoint — a separate
   // step from binding activation. See RealAdtClient.publishODataV4Service.
   app.post("/api/diagnostics/publish-odata-v4", async (req, res) => {
-    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    // Allows an explicit override — service publish/registration lives in a
+    // different client (SHD250SYSTEM) than object creation/activation
+    // (SHD200SYSTEM) on this landscape; repository objects are client-
+    // independent, so the same SRVB created via SHD200SYSTEM's session is
+    // visible and publishable through a SHD250SYSTEM session too.
+    const destinationName = req.body?.destinationName ?? process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
     const { serviceName } = req.body ?? {};
     if (!serviceName) return res.status(400).json({ error: "serviceName is required" });
     try {
