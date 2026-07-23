@@ -442,6 +442,72 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Experimental real ABAP Unit trigger, isolated from the main pipeline
+  // while the response shape gets proven against SHD200SYSTEM — unlike
+  // RealAdtClient.runAbapUnit (which swallows failures to [] by design),
+  // this surfaces the raw response/error so a parsing mismatch is visible
+  // instead of silently looking like "no tests exist". Doesn't modify any
+  // ABAP object.
+  app.get("/api/diagnostics/abapunit-trigger/:programName", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const objectUri = `/sap/bc/adt/programs/programs/${encodeURIComponent(req.params.programName.toLowerCase())}`;
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<aunit:runConfiguration xmlns:aunit="http://www.sap.com/adt/aunit">
+  <external>
+    <coverage active="false"/>
+  </external>
+  <options>
+    <uriType value="semantic"/>
+    <testDeterminationStrategy sameProgram="true" assignedTests="false"/>
+    <testRiskLevels harmless="true" dangerous="false" critical="false"/>
+    <testDurations short="true" medium="false" long="false"/>
+    <withNavigationUri enabled="true"/>
+  </options>
+  <adtcore:objectSets xmlns:adtcore="http://www.sap.com/adt/core">
+    <objectSet kind="inclusive">
+      <adtcore:objectReferences>
+        <adtcore:objectReference adtcore:uri="${objectUri}"/>
+      </adtcore:objectReferences>
+    </objectSet>
+  </adtcore:objectSets>
+</aunit:runConfiguration>`;
+    try {
+      const tokenFetch = await executeHttpRequest(
+        { destinationName },
+        { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch" } },
+        { fetchCsrfToken: false }
+      );
+      const csrfToken = tokenFetch.headers?.["x-csrf-token"];
+      const setCookie = (tokenFetch.headers?.["set-cookie"] as string[] | undefined) ?? [];
+      const cookie = setCookie.map((c) => c.split(";")[0]).join("; ");
+      const response = await executeHttpRequest(
+        { destinationName },
+        {
+          method: "post",
+          url: "/sap/bc/adt/abapunit/testruns",
+          data: body,
+          headers: {
+            "Content-Type": "application/*",
+            Accept: "application/*",
+            ...(csrfToken ? { "X-CSRF-Token": String(csrfToken) } : {}),
+            ...(cookie ? { Cookie: cookie } : {}),
+          },
+        },
+        { fetchCsrfToken: false }
+      );
+      res.type("text/plain").send(String(response.data));
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown } };
+      res.status(502).json({
+        destinationName,
+        objectUri,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+      });
+    }
+  });
+
   // Serve the built frontend (see scripts/copy-frontend.js) if present —
   // absent in plain `npm run dev` where the Vite dev server handles the UI.
   const publicDir = path.join(__dirname, "public");

@@ -3,6 +3,7 @@ import { DependencyObject } from "../domain/types";
 import { AtcRawFinding, ObjectSource, SapClient, UnitTestCaseResult } from "./SapClient";
 import { extractDependencies, runStaticAtcRules } from "./staticCleanCoreRules";
 import { parseAtcWorklistFindings } from "./atcFindingClassifier";
+import { parseAbapUnitResults } from "./abapUnitParser";
 
 /**
  * Accumulates cookies and the CSRF token across an entire multi-request
@@ -157,14 +158,71 @@ export class RealAdtClient implements SapClient {
   }
 
   /**
-   * Real ADT Unit Test execution (`/sap/bc/adt/abapunit/testruns`) isn't
-   * wired up yet. Returning no cases (rather than throwing) is the honest
-   * answer — "nothing has actually been run" — and lets
-   * baselineTestAgent's existing not-yet-verified placeholder do its job
-   * instead of crashing real-mode discovery over an unimplemented method.
+   * Real ADT Unit Test execution via `/sap/bc/adt/abapunit/testruns` — same
+   * create-worklist-style single-POST protocol as ATC, but everything (test
+   * determination, run, and results) comes back in one response rather than
+   * a separate create/run/poll sequence. Request body modeled directly on
+   * the `abap-adt-api` reference implementation's `runUnitTest` (same
+   * options: same-program test determination, harmless/short risk level
+   * only — dangerous/critical/long tests are opt-in, not run by default,
+   * since this executes real code in the target system).
+   *
+   * On any failure (comm/RFC issue, no test class for this object, etc.)
+   * this returns `[]` rather than throwing — consistent with this method's
+   * existing contract before real execution was wired up: "nothing has
+   * actually been run" is the honest answer either way, and
+   * baselineTestAgent's MIN_COVERAGE fallback already handles a genuinely
+   * empty result.
    */
-  async runAbapUnit(_programName: string): Promise<UnitTestCaseResult[]> {
-    return [];
+  async runAbapUnit(programName: string): Promise<UnitTestCaseResult[]> {
+    const objectUri = `/sap/bc/adt/programs/programs/${encodeURIComponent(programName.toLowerCase())}`;
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+
+    try {
+      const tokenFetch = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch" } },
+        opts
+      );
+      session.absorb(tokenFetch.headers);
+
+      const body = `<?xml version="1.0" encoding="UTF-8"?>
+<aunit:runConfiguration xmlns:aunit="http://www.sap.com/adt/aunit">
+  <external>
+    <coverage active="false"/>
+  </external>
+  <options>
+    <uriType value="semantic"/>
+    <testDeterminationStrategy sameProgram="true" assignedTests="false"/>
+    <testRiskLevels harmless="true" dangerous="false" critical="false"/>
+    <testDurations short="true" medium="false" long="false"/>
+    <withNavigationUri enabled="true"/>
+  </options>
+  <adtcore:objectSets xmlns:adtcore="http://www.sap.com/adt/core">
+    <objectSet kind="inclusive">
+      <adtcore:objectReferences>
+        <adtcore:objectReference adtcore:uri="${objectUri}"/>
+      </adtcore:objectReferences>
+    </objectSet>
+  </adtcore:objectSets>
+</aunit:runConfiguration>`;
+
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "post",
+          url: "/sap/bc/adt/abapunit/testruns",
+          data: body,
+          headers: { "Content-Type": "application/*", Accept: "application/*", ...session.headers() },
+        },
+        opts
+      );
+
+      return parseAbapUnitResults(String(response.data));
+    } catch {
+      return [];
+    }
   }
 
   /**
