@@ -45,10 +45,12 @@ class SapSession {
  *
  * Status: read path — readObjectSource (live ADT source read),
  * getDependencies (static-text extraction, not a full ADT where-used
- * call), runAtcCheck (a static rule engine standing in for real ATC — see
- * staticCleanCoreRules.ts), and runAbapUnit (honestly returns no cases
- * rather than fabricating results, since real ABAP Unit execution isn't
- * wired up).
+ * call), runAtcCheck (real ATC via the create-worklist -> run -> poll-
+ * worklist flow, falling back to the static rule engine in
+ * staticCleanCoreRules.ts only when the live call fails — see this
+ * method's own doc comment), and runAbapUnit (real execution via
+ * /sap/bc/adt/abapunit/testruns, returning [] on any failure rather than
+ * fabricating results).
  *
  * Write path — syntaxCheckAndActivate is implemented and live-tested
  * against SHD200SYSTEM: lock -> write source -> unlock -> activate (in
@@ -61,7 +63,8 @@ class SapSession {
  * should eventually replace that for anything beyond this app's current
  * human-gated, single-approver use.
  *
- * objectExists is still an explicit unimplemented stub.
+ * objectExists is implemented via ADT's repository quick-search (see its
+ * own doc comment below) — no longer a stub.
  */
 export class RealAdtClient implements SapClient {
   constructor(private readonly destinationName: string) {}
