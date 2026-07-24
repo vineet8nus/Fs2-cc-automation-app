@@ -71,12 +71,56 @@ export function classifyAtcFinding(
   };
 }
 
+// The ADT collection prefixes a finding's `atcfinding:location` URI can
+// resolve through, mapped to how many path segments after the prefix name
+// the object itself (vs. e.g. a class's own sub-include path, or the
+// trailing /source/main). Confirmed empirically (see chat / ATC review
+// findings against Z_TEST_GST_REP1) that a real ATC run's *block-level*
+// adtcore:name is USELESS for per-Include attribution — every one of 4
+// separate real ATC runs scoped to a report's own URI and each of its 3
+// Includes' own URIs came back attributed to the *report's* name uniformly,
+// never the queried object's own name. Classic Report+Includes are one
+// compilation unit for ATC's purposes; it always reports against the
+// owning report's identity regardless of which piece you scope the run to.
+// This makes the finding's own `atcfinding:location` the only remaining
+// candidate for genuine per-Include precision — unverified whether it
+// actually varies usefully (no live ATC access to confirm at the time this
+// was written; the ATC RFC destination is only up during business hours),
+// so this is attempted defensively with a safe fallback, not relied upon.
+const LOCATION_COLLECTION_PATTERNS: RegExp[] = [
+  /\/programs\/includes\/([^/]+)\//,
+  /\/programs\/programs\/([^/]+)\//,
+  /\/oo\/classes\/([^/]+)\//,
+  /\/oo\/interfaces\/([^/]+)\//,
+];
+
+/**
+ * Extracts the real object a finding's location points into, from its
+ * `atcfinding:location` URI — e.g.
+ * ".../programs/includes/z_test_gst_rep1_c01/source/main#start=12,4"
+ * -> "Z_TEST_GST_REP1_C01". Returns undefined (not a guess) if the URI is
+ * absent or doesn't match any recognized ADT collection shape — callers
+ * should fall back to their own calling-context container in that case,
+ * NOT coerce to the primary object, since an unrecognized-but-present
+ * location is still informative (a genuinely different, possibly
+ * out-of-closure object) and must be preserved as-is so the existing
+ * containerObject !== program.name deferral path (never auto-remediated)
+ * handles it safely rather than risking a fix applied to the wrong object.
+ */
+export function extractContainerFromLocation(location: string | undefined): string | undefined {
+  if (!location) return undefined;
+  for (const pattern of LOCATION_COLLECTION_PATTERNS) {
+    const match = location.match(pattern);
+    if (match) return match[1].toUpperCase();
+  }
+  return undefined;
+}
+
 /**
  * Parses an ATC worklist XML response (see RealAdtClient.triggerAtcRun) into
- * our AtcRawFinding shape, attributing each finding to the actual object
- * (adtcore:name) it was found on rather than assuming it's always the
- * queried object — a real ATC run against one object set can report
- * findings distributed across everything ATC considers in scope.
+ * our AtcRawFinding shape. `objectName` keeps its existing (block-level,
+ * confirmed-uniform-per-run) meaning; `foundInObject` is the best-effort,
+ * per-finding location-derived container — see extractContainerFromLocation.
  */
 export function parseAtcWorklistFindings(worklistXml: string): AtcRawFinding[] {
   const findings: AtcRawFinding[] = [];
@@ -93,12 +137,14 @@ export function parseAtcWorklistFindings(worklistXml: string): AtcRawFinding[] {
       const checkId = attrs.match(/atcfinding:checkId="([^"]*)"/)?.[1] ?? "UNKNOWN";
       const checkTitle = decodeXmlEntities(attrs.match(/atcfinding:checkTitle="([^"]*)"/)?.[1] ?? "ATC finding");
       const messageTitle = decodeXmlEntities(attrs.match(/atcfinding:messageTitle="([^"]*)"/)?.[1] ?? checkTitle);
+      const location = attrs.match(/atcfinding:location="([^"]*)"/)?.[1];
       const classified = classifyAtcFinding(checkTitle, messageTitle, priority);
       findings.push({
         atcCheckId: checkId,
         checkName: checkTitle,
         message: messageTitle,
         objectName,
+        foundInObject: extractContainerFromLocation(location),
         priority,
         extensibilityLevel: classified.extensibilityLevel,
         fixOrigin: classified.fixOrigin,

@@ -1,6 +1,6 @@
 import { executeHttpRequest } from "@sap-cloud-sdk/http-client";
 import { DependencyObject } from "../domain/types";
-import { AtcRawFinding, ObjectSource, SapClient, UnitTestCaseResult } from "./SapClient";
+import { AtcRawFinding, ObjectSource, SapClient, SYSTEM_ATC_FALLBACK_CHECK_ID, UnitTestCaseResult } from "./SapClient";
 import { extractDependencies, runStaticAtcRules } from "./staticCleanCoreRules";
 import { parseAtcWorklistFindings } from "./atcFindingClassifier";
 import { parseAbapUnitResults } from "./abapUnitParser";
@@ -143,7 +143,7 @@ export class RealAdtClient implements SapClient {
       const fallback = runStaticAtcRules(currentSource);
       const reason = err instanceof Error ? err.message : String(err);
       fallback.unshift({
-        atcCheckId: "SYSTEM_ATC_FALLBACK",
+        atcCheckId: SYSTEM_ATC_FALLBACK_CHECK_ID,
         checkName: "Live ATC unavailable",
         message: `Live ATC run against ${primaryName} failed (${reason}) — showing the static rule-engine approximation below instead of real ATC findings. Commonly happens outside business hours when the ATC RFC destination is intentionally offline.`,
         objectName: primaryName,

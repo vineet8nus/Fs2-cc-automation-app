@@ -5,12 +5,30 @@ export interface AtcRawFinding {
   checkName: string;
   message: string;
   objectName: string;
+  /**
+   * Best-effort, per-finding real container (which repository object this
+   * finding is actually physically located in — e.g. a specific Include —
+   * derived from the finding's own ATC location, not from which object URI
+   * happened to be queried to obtain it). Only ever set by RealAdtClient's
+   * worklist parser; undefined for the static rule engine and MockSapClient,
+   * whose callers already know the correct container from their own calling
+   * context. See atcFindingClassifier.ts's extractContainerFromLocation.
+   */
+  foundInObject?: string;
   priority: AtcPriority;
   extensibilityLevel: ExtensibilityLevel;
   fixOrigin: FixOrigin;
   fixDescription: string;
   replacementObject?: string;
   fixConfidence: "high" | "medium" | "low";
+}
+
+/** Sentinel checkId RealAdtClient.runAtcCheck prepends when it fell back to the static rule engine — see usedRealAtc. */
+export const SYSTEM_ATC_FALLBACK_CHECK_ID = "SYSTEM_ATC_FALLBACK";
+
+/** True if `findings` came from a real ATC run, not the static-engine fallback (RealAdtClient.runAtcCheck). */
+export function usedRealAtc(findings: AtcRawFinding[]): boolean {
+  return !findings.some((f) => f.atcCheckId === SYSTEM_ATC_FALLBACK_CHECK_ID);
 }
 
 export interface ObjectSource {

@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { Finding } from "../domain/types";
-import { AtcRawFinding, ObjectSource, SapClient } from "../sap/SapClient";
+import { AtcRawFinding, ObjectSource, SapClient, usedRealAtc } from "../sap/SapClient";
 
 /**
  * Gap-filler custom rules for things the central ATC clean-core variant
@@ -39,6 +39,18 @@ function runCustomRules(programName: string, source: string): AtcRawFinding[] {
   return findings;
 }
 
+/**
+ * Prefers the finding's own real, per-finding location-derived container
+ * (`foundInObject` — see atcFindingClassifier.ts's extractContainerFromLocation)
+ * over the calling context's fallback name. Only ATC-sourced real findings
+ * ever carry `foundInObject`; the static engine and custom rules have no
+ * location data and always fall through to `fallback` unchanged (their
+ * existing, already-correct single-object-scoped behavior).
+ */
+function pickContainer(raw: AtcRawFinding, fallback: string): string {
+  return raw.foundInObject ?? fallback;
+}
+
 function toFinding(raw: AtcRawFinding, containerObject: string): Finding {
   return {
     id: uuidv4(),
@@ -69,6 +81,26 @@ function toFinding(raw: AtcRawFinding, containerObject: string): Finding {
  * Remediation still only ever fixes the primary object's source — a
  * finding whose containerObject differs from `programName` is always
  * deferred with an explanation (orchestrator.ts), never silently attempted.
+ *
+ * INCLUDE-type closure members are deliberately NOT re-queried against real
+ * ATC here when the primary object's own run already succeeded — confirmed
+ * live against a real multi-Include program that a classic Report and its
+ * Includes are one compilation unit for ATC's purposes: separately scoping
+ * a run to the report's own URI and to each of its 3 Includes' own URIs
+ * returned the exact same finding set attributed to the report's identity
+ * every time, never the queried Include's own name. Re-querying per Include
+ * added zero coverage and was the direct cause of a real production bug
+ * (the same findings duplicated once per Include, each copy mislabeled with
+ * a different containerObject). CLASS-type members remain their own
+ * independent real ATC call below — a class is its own compilation/
+ * activation unit, unlike an Include, so it does need its own run.
+ *
+ * If the primary run itself fell back to the static engine (no real ATC
+ * available — e.g. outside business hours, see RealAdtClient.runAtcCheck),
+ * each Include still gets its own static-engine pass over its own source,
+ * exactly as before: the fallback engine has no cross-file awareness at
+ * all, so skipping it would silently lose Include-level static coverage
+ * whenever real ATC happens to be down.
  */
 export async function runCleanCoreAnalysis(
   objectNames: string[],
@@ -79,14 +111,22 @@ export async function runCleanCoreAnalysis(
 ): Promise<Finding[]> {
   const primaryAdtType = programSource.type === "CLAS" || programSource.type === "INCL" ? programSource.type : "PROG";
   const atcFindings = await sap.runAtcCheck(objectNames, programSource.source, primaryAdtType);
+  const primaryUsedRealAtc = usedRealAtc(atcFindings);
   const customFindings = runCustomRules(programName, programSource.source);
-  const findings = [...atcFindings, ...customFindings].map((f) => toFinding(f, programName));
+  const findings = [
+    ...atcFindings.map((f) => toFinding(f, pickContainer(f, programName))),
+    ...customFindings.map((f) => toFinding(f, programName)),
+  ];
 
   for (const obj of closureObjects) {
-    const objAdtType = obj.type === "CLASS" ? "CLAS" : "INCL";
-    const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source, objAdtType);
+    const needsOwnAtcRun = obj.type === "CLASS" || !primaryUsedRealAtc;
+    if (needsOwnAtcRun) {
+      const objAdtType = obj.type === "CLASS" ? "CLAS" : "INCL";
+      const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source, objAdtType);
+      findings.push(...objAtcFindings.map((f) => toFinding(f, pickContainer(f, obj.name))));
+    }
     const objCustomFindings = runCustomRules(obj.name, obj.source);
-    findings.push(...[...objAtcFindings, ...objCustomFindings].map((f) => toFinding(f, obj.name)));
+    findings.push(...objCustomFindings.map((f) => toFinding(f, obj.name)));
   }
 
   return findings;

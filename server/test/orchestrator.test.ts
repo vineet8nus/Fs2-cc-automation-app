@@ -109,14 +109,22 @@ class IncludeDependencySapClient extends MockSapClient implements SapClient {
     }
     return super.readObjectSource(name, objectType);
   }
+  // Models real ATC's actual behavior (see atcFindingClassifier.ts): a run
+  // scoped to the primary Program's own URI already covers its whole
+  // compilation unit, so it surfaces this Include's finding directly, with
+  // `foundInObject` set from the finding's own location — not a second,
+  // independent call scoped to the Include's own URI (which the orchestrator
+  // no longer makes when the primary run already used real ATC; see
+  // cleanCoreAnalysisAgent's needsOwnAtcRun).
   async runAtcCheck(objectNames: string[], currentSource: string): Promise<AtcRawFinding[]> {
-    if (currentSource.includes("vbap")) {
+    if (objectNames[0] === "ZINCLTEST") {
       return [
         {
           atcCheckId: "TEST_INCLUDE_FINDING",
           checkName: "Test include finding",
           message: "Direct SELECT on vbap in include",
-          objectName: "VBAP",
+          objectName: "ZINCLTEST",
+          foundInObject: "ZCL_INCL_HELPER",
           priority: 2,
           extensibilityLevel: "C",
           fixOrigin: "ai_generated",
