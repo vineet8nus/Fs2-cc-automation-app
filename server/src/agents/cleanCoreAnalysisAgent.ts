@@ -59,6 +59,7 @@ function toFinding(raw: AtcRawFinding, containerObject: string): Finding {
     message: raw.message,
     objectName: raw.objectName,
     containerObject,
+    line: raw.line,
     priority: raw.priority,
     extensibilityLevel: raw.extensibilityLevel,
     suggestedFix: {

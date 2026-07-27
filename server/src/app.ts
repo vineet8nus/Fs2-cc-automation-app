@@ -11,12 +11,24 @@ import { RealAdtClient } from "./sap/RealAdtClient";
 import { Orchestrator } from "./orchestrator/orchestrator";
 import { parseIntakeExcel } from "./utils/excelParser";
 import { computeRetroMetrics } from "./agents/processRetroAgent";
+import { AiCoreRemediationClient, loadAiCoreConfigFromEnv } from "./agents/aiRemediationAgent";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   const sap = createSapClient();
-  const orchestrator = new Orchestrator(store, sap);
+  // Only wired up in real mode — mock/demo runs never make a real (paid)
+  // AI Core call, keeping the mock-mode pipeline exactly as deterministic
+  // as it always was. Absent config (AI Core not bound, or
+  // AICORE_DEPLOYMENT_ID not set) leaves this undefined, which
+  // Orchestrator treats as "no AI remediation available" — the same
+  // honest "no automated fix" outcome as before this existed.
+  const aiCoreConfig = process.env.SAP_INTEGRATION_MODE === "real" ? loadAiCoreConfigFromEnv() : undefined;
+  const aiRemediation = aiCoreConfig ? new AiCoreRemediationClient(aiCoreConfig) : undefined;
+  if (process.env.SAP_INTEGRATION_MODE === "real" && !aiRemediation) {
+    console.warn("[app] Real mode without AI Core configured (missing aicore binding or AICORE_DEPLOYMENT_ID) — findings with no mechanical fix will be deferred for manual remediation only.");
+  }
+  const orchestrator = new Orchestrator(store, sap, aiRemediation);
 
   const app = express();
   app.use(cors());
@@ -29,6 +41,7 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
         status: "ok",
         sapIntegrationMode: process.env.SAP_INTEGRATION_MODE ?? "mock",
         storeType: store.constructor.name,
+        aiRemediationEnabled: !!aiRemediation,
         programCount,
       });
     } catch (err) {

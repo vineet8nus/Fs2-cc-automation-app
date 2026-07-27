@@ -72,6 +72,8 @@ export interface Finding {
    * than silently attempted.
    */
   containerObject: string;
+  /** 1-based source line within containerObject the finding points at, when ATC's own location data was parseable. Lets AI-based remediation see the actual surrounding code instead of guessing from a generic message alone. */
+  line?: number;
   priority: AtcPriority;
   extensibilityLevel: ExtensibilityLevel;
   suggestedFix: SuggestedFix;

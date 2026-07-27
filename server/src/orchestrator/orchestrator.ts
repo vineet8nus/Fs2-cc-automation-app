@@ -6,6 +6,7 @@ import { runDiscovery } from "../agents/discoveryAgent";
 import { runCleanCoreAnalysis } from "../agents/cleanCoreAnalysisAgent";
 import { runBaselineTests } from "../agents/baselineTestAgent";
 import { runRemediation } from "../agents/remediationAgent";
+import { AiRemediationClient } from "../agents/aiRemediationAgent";
 import { runValidation } from "../agents/validationAgent";
 import { generateReport } from "../agents/reportingAgent";
 import { commitRemediation, diffAgainstBaseline, runGitSync } from "../agents/gitSyncAgent";
@@ -77,7 +78,20 @@ function resolveClosureObjects(
 }
 
 export class Orchestrator {
-  constructor(private readonly store: ProgramStore, private readonly sap: SapClient) {}
+  /**
+   * `aiRemediation` is optional and additive — omitting it (as every
+   * existing test/call site does) preserves prior behavior exactly: a
+   * finding the mechanical pass in remediationAgent.ts can't fix is
+   * deferred with "no automated fix", same as before this existed. When
+   * present (real mode with SAP AI Core configured — see app.ts), it gets
+   * one extra attempt per object before falling back to that same honest
+   * "deferred" outcome.
+   */
+  constructor(
+    private readonly store: ProgramStore,
+    private readonly sap: SapClient,
+    private readonly aiRemediation?: AiRemediationClient
+  ) {}
 
   /** Creates one workflow instance per Excel row and runs it through the fully-automatic phases (Phase 2-4). */
   async ingest(rows: ExcelIntakeRow[]): Promise<Program[]> {
@@ -327,14 +341,47 @@ export class Orchestrator {
       const f = program.findings.find((x) => x.id === id);
       if (f) f.status = "fixed";
     }
-    // A finding can be approved yet still have no mechanical fix behind it —
-    // e.g. an ai_generated suggestion with no known replacementObject (no
-    // CDS/BAPI mapping was identified), or an origin of "none" (manual-only,
-    // like SELECT-inside-LOOP). Leaving these as "approved" looked, in the
-    // UI, like the fix had been handled even though the proposed source is
-    // byte-identical for that finding — flag it as "deferred" with a reason
-    // instead of silently doing nothing.
-    for (const id of remediation.skippedFindingIds) {
+
+    let finalSource = remediation.newSource;
+    const finalChangeLog = [...remediation.changeLog];
+    const stillUnresolvedIds = new Set(remediation.skippedFindingIds);
+
+    // A second attempt via SAP AI Core for whatever the mechanical
+    // (regex/table-mapping) pass above couldn't resolve — most real ATC
+    // findings, since most never name a specific table/API anywhere
+    // queryable except free-text message strings a regex can't reliably
+    // parse. Still fully human-gated: this only ever changes
+    // program.proposedSource, which the existing Fix Review screen shows
+    // for edit/approval before syntaxCheckAndActivate ever runs — no new
+    // write path. Skipped entirely when aiRemediation isn't configured
+    // (mock mode, or real mode without AI Core wired up), and any failure
+    // (auth/network/timeout/bad response) is swallowed by
+    // AiCoreRemediationClient itself, never surfacing here as a thrown
+    // error that could derail the rest of the pipeline.
+    if (this.aiRemediation && stillUnresolvedIds.size > 0) {
+      const stillUnresolvedFindings = program.findings.filter((f) => stillUnresolvedIds.has(f.id));
+      const aiResult = await this.aiRemediation.proposeFixes(program.name, finalSource, stillUnresolvedFindings);
+      if (aiResult && aiResult.appliedFindingIds.length > 0) {
+        finalSource = aiResult.newSource;
+        finalChangeLog.push(...aiResult.changeLog);
+        for (const id of aiResult.appliedFindingIds) {
+          const f = program.findings.find((x) => x.id === id);
+          if (f) {
+            f.status = "fixed";
+            stillUnresolvedIds.delete(id);
+          }
+        }
+      }
+    }
+
+    // A finding can be approved yet still have no fix behind it after both
+    // passes — e.g. an ai_generated suggestion neither the table mapping
+    // nor AI Core could resolve, or an origin of "none" (manual-only, like
+    // SELECT-inside-LOOP or a missing authorization check). Leaving these
+    // as "approved" looked, in the UI, like the fix had been handled even
+    // though the proposed source is byte-identical for that finding — flag
+    // it as "deferred" with a reason instead of silently doing nothing.
+    for (const id of stillUnresolvedIds) {
       const f = program.findings.find((x) => x.id === id);
       if (!f) continue;
       f.status = "deferred";
@@ -348,14 +395,14 @@ export class Orchestrator {
       );
     }
     program.remediationAttempts += 1;
-    program.proposedSource = remediation.newSource;
+    program.proposedSource = finalSource;
 
     if (!program.gitBaseline) throw new Error("Program has no git baseline to commit remediation against.");
     program.gitBaseline = commitRemediation(
       program.name,
       program.gitBaseline,
-      remediation.newSource,
-      remediation.changeLog.join("; ") || "no automated changes applied"
+      finalSource,
+      finalChangeLog.join("; ") || "no automated changes applied"
     );
     moveTo(program, "AWAITING_FIX_REVIEW", "RemediationAgent", "fix-proposed", `PR ${program.gitBaseline.prUrl}`);
     await this.store.save(program);

@@ -117,6 +117,22 @@ export function extractContainerFromLocation(location: string | undefined): stri
 }
 
 /**
+ * Extracts the 1-based source line a finding's `atcfinding:location`
+ * points at (the `#start=<line>,<col>` fragment) — e.g.
+ * ".../source/main#start=45,10" -> 45. Used to show an LLM-based
+ * remediation pass the actual surrounding lines for a finding instead of
+ * the whole object's source, since most real ATC messages ("Usage of not
+ * released application API.") name no specific table/API at all — the
+ * location is often the ONLY way to know where in the file a generic
+ * finding actually is.
+ */
+export function extractLineFromLocation(location: string | undefined): number | undefined {
+  if (!location) return undefined;
+  const match = location.match(/#start=(\d+),\d+/);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
  * Parses an ATC worklist XML response (see RealAdtClient.triggerAtcRun) into
  * our AtcRawFinding shape. `objectName` keeps its existing (block-level,
  * confirmed-uniform-per-run) meaning; `foundInObject` is the best-effort,
@@ -145,6 +161,7 @@ export function parseAtcWorklistFindings(worklistXml: string): AtcRawFinding[] {
         message: messageTitle,
         objectName,
         foundInObject: extractContainerFromLocation(location),
+        line: extractLineFromLocation(location),
         priority,
         extensibilityLevel: classified.extensibilityLevel,
         fixOrigin: classified.fixOrigin,

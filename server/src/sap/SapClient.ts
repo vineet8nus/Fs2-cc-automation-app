@@ -15,6 +15,8 @@ export interface AtcRawFinding {
    * context. See atcFindingClassifier.ts's extractContainerFromLocation.
    */
   foundInObject?: string;
+  /** 1-based source line the finding's own ATC location points at, when parseable — see atcFindingClassifier.ts's extractLineFromLocation. */
+  line?: number;
   priority: AtcPriority;
   extensibilityLevel: ExtensibilityLevel;
   fixOrigin: FixOrigin;

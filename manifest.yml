@@ -12,8 +12,11 @@ applications:
       SAP_INTEGRATION_MODE: real
       SAP_DESTINATION_NAME: SHD200SYSTEM
       SAP_ATC_CHECK_VARIANT: ZNUS_SCI_CC_CENTRAL
+      AICORE_DEPLOYMENT_ID: d43f480bb44114ba
+      AICORE_RESOURCE_GROUP: default
       NODE_ENV: production
     services:
       - fs2-cc-automation-destination
       - fs2-cc-automation-connectivity
       - zepcappg-postgres
+      - default_aicore

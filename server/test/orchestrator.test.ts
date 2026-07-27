@@ -4,6 +4,8 @@ import { InMemoryProgramStore } from "../src/store/store";
 import { DependencyObject } from "../src/domain/types";
 import { MockSapClient } from "../src/sap/MockSapClient";
 import { AtcRawFinding, ObjectSource, SapClient } from "../src/sap/SapClient";
+import { AiFixResult, AiRemediationClient } from "../src/agents/aiRemediationAgent";
+import { Finding } from "../src/domain/types";
 
 // A SapClient that behaves like MockSapClient for everything up through
 // Gate 1, but fails validation the way RealAdtClient currently does (an
@@ -297,5 +299,71 @@ describe("orchestrator treats a finding's own containerObject as case-insensitiv
     expect(proposed.findings.find((f) => f.id === finding!.id)?.status).toBe("fixed");
     expect(proposed.auditLog.some((a) => a.action === "no-automated-fix")).toBe(false);
     expect(proposed.proposedSource).not.toBe(proposed.baselineSource);
+  });
+});
+
+/** Fake AiRemediationClient — never makes a real network call. Lets tests exercise the orchestrator's wiring without depending on live SAP AI Core. */
+class FakeAiRemediationClient implements AiRemediationClient {
+  calls: { programName: string; findingIds: string[] }[] = [];
+  constructor(private readonly result: AiFixResult | undefined | ((findings: Finding[]) => AiFixResult | undefined)) {}
+  async proposeFixes(programName: string, _source: string, findings: Finding[]): Promise<AiFixResult | undefined> {
+    this.calls.push({ programName, findingIds: findings.map((f) => f.id) });
+    return typeof this.result === "function" ? this.result(findings) : this.result;
+  }
+}
+
+describe("orchestrator's optional AI Core remediation pass", () => {
+  it("only calls AI remediation for findings the mechanical pass couldn't resolve, and marks its successes fixed", async () => {
+    const store = new InMemoryProgramStore();
+    // MockSapClient's default findings: MARA/VBAK/MATERIAL_READ/REFRESH all
+    // get mechanically fixed by the hardcoded mock branches; "Missing ORDER
+    // BY" (origin "none") is the one left over for the AI pass to see.
+    const ai = new FakeAiRemediationClient((findings) => ({
+      newSource: "REPORT ztest.\n* AI-fixed the ORDER BY issue.",
+      appliedFindingIds: findings.map((f) => f.id),
+      changeLog: ["[AI-fix] Added explicit ORDER BY."],
+    }));
+    const orchestrator = new Orchestrator(store, new MockSapClient(), ai);
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZAITEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
+
+    expect(ai.calls).toHaveLength(1);
+    const orderByFinding = program.findings.find((f) => f.checkName === "Missing ORDER BY");
+    expect(ai.calls[0].findingIds).toEqual([orderByFinding!.id]);
+    expect(proposed.findings.find((f) => f.id === orderByFinding!.id)?.status).toBe("fixed");
+    expect(proposed.proposedSource).toBe("REPORT ztest.\n* AI-fixed the ORDER BY issue.");
+    expect(proposed.auditLog.some((a) => a.action === "no-automated-fix")).toBe(false);
+  });
+
+  it("falls back to the honest 'no automated fix' outcome when the AI pass returns nothing (failure or declined)", async () => {
+    const store = new InMemoryProgramStore();
+    const ai = new FakeAiRemediationClient(undefined);
+    const orchestrator = new Orchestrator(store, new MockSapClient(), ai);
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZAIFAILTEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
+
+    expect(ai.calls).toHaveLength(1);
+    const orderByFinding = program.findings.find((f) => f.checkName === "Missing ORDER BY");
+    expect(proposed.findings.find((f) => f.id === orderByFinding!.id)?.status).toBe("deferred");
+    expect(proposed.auditLog.some((a) => a.action === "no-automated-fix")).toBe(true);
+  });
+
+  it("never invokes AI remediation when no client is configured (existing 2-arg construction, e.g. mock mode)", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new MockSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZNOAITEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
+
+    const orderByFinding = program.findings.find((f) => f.checkName === "Missing ORDER BY");
+    expect(proposed.findings.find((f) => f.id === orderByFinding!.id)?.status).toBe("deferred");
   });
 });
