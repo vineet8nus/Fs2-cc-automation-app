@@ -304,7 +304,7 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
   // result. See RealAdtClient.triggerAtcRun.
   app.get("/api/diagnostics/atc-trigger/:programName", async (req, res) => {
     const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
-    const checkVariant = String(req.query.checkVariant ?? "ZNUS_SCI_DEF_CENTRAL");
+    const checkVariant = String(req.query.checkVariant ?? "ZNUS_SCI_CC_CENTRAL");
     // objtype lets this diagnostic target CLAS/INTF objects too, not just
     // PROG — the collection each lives under differs (oo/classes,
     // oo/interfaces, programs/programs).

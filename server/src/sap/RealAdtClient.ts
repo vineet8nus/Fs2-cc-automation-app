@@ -164,7 +164,14 @@ export class RealAdtClient implements SapClient {
 
     const collection = objectType === "CLAS" ? "oo/classes" : objectType === "INCL" ? "programs/includes" : "programs/programs";
     const objectUri = `/sap/bc/adt/${collection}/${encodeURIComponent(primaryName.toLowerCase())}`;
-    const checkVariant = process.env.SAP_ATC_CHECK_VARIANT ?? "ZNUS_SCI_DEF_CENTRAL";
+    // ZNUS_SCI_DEF_CENTRAL (the earlier default here) is a generic static-
+    // check variant (CVA/SLIN-style checks only) — it does NOT include the
+    // "Usage of Released APIs" clean-core check category at all, which is
+    // the actual point of this app. Confirmed against a real ATC run in
+    // SAP GUI on Z_TEST_GST_REP1: ZNUS_SCI_DEF_CENTRAL found 8 findings,
+    // none of them clean-core API-usage findings, while the correct
+    // clean-core variant found 298. ZNUS_SCI_CC_CENTRAL is that variant.
+    const checkVariant = process.env.SAP_ATC_CHECK_VARIANT ?? "ZNUS_SCI_CC_CENTRAL";
     const windowDescription = `${ATC_BUSINESS_HOURS_START}:00–${ATC_BUSINESS_HOURS_END}:00 ${ATC_BUSINESS_HOURS_TZ}, Monday–Friday`;
 
     if (!isAtcBusinessHours()) {
@@ -275,8 +282,11 @@ export class RealAdtClient implements SapClient {
   /**
    * Experimental: triggers a real ATC run via the standard create-worklist
    * -> run -> poll-worklist flow, against the system's actual configured
-   * check variant (ZNUS_SCI_DEF_CENTRAL on SHD200SYSTEM, discovered via
-   * /sap/bc/adt/atc/customizing). Not yet part of the SapClient interface —
+   * check variant (ZNUS_SCI_CC_CENTRAL — the actual clean-core variant on
+   * SHD200SYSTEM, confirmed against a real SAP GUI ATC run; an earlier
+   * default here, ZNUS_SCI_DEF_CENTRAL, was a generic static-check variant
+   * missing the clean-core "Usage of Released APIs" checks entirely). Not
+   * yet part of the SapClient interface —
    * this is a diagnostic/proving step (see /api/diagnostics/atc-trigger)
    * while the exact request/response shapes get nailed down against the
    * real system. Doesn't modify any ABAP object; safe to run repeatedly.
