@@ -30,7 +30,25 @@ import { api } from "../api/client";
 import { LevelBadge, RiskBadge, StateBadge } from "../components/Badges";
 import { DiffView, RawDiffView } from "../components/DiffView";
 import { objectTypeLabel } from "../components/objectTypes";
-import { ProgramDetail } from "../types";
+import { Finding, ProgramDetail } from "../types";
+
+/**
+ * `suggestedFix.origin` alone overstates what remediation can actually do:
+ * both "native_quick_fix" and "ai_generated" are meant to imply an
+ * automated fix, but runRemediation (server/src/agents/remediationAgent.ts)
+ * only has ONE generic branch for real-mode findings, and it requires a
+ * concrete `replacementObject` to swap in — an "ai_generated" finding
+ * without one (the common case for a real ATC run, where the classifier
+ * can categorize the *kind* of issue but has no LLM wired up to actually
+ * write a fix) is approved-then-silently-deferred exactly like a "none"
+ * finding, despite being labeled "AI-fix" in the UI. This checks the one
+ * thing that actually determines whether approving a finding does
+ * anything mechanical, so the badge doesn't promise more than the backend
+ * delivers.
+ */
+function isMechanicallyFixable(f: Finding): boolean {
+  return !!f.suggestedFix.replacementObject;
+}
 
 const STEP_TITLES = ["Object intake", "ATC findings", "Propose & approve fix", "Results & audit log"] as const;
 type Step = 1 | 2 | 3 | 4;
@@ -293,6 +311,25 @@ export function ProgramDetailPage() {
                     </Panel>
 
                     <Panel headerText={`Findings (${program.findings.length})`}>
+                      {program.state === "AWAITING_HUMAN_REVIEW_1" && openFindings.length > 0 && (
+                        <FlexBox style={{ gap: "0.5rem", padding: "0 1rem 0.5rem" }}>
+                          <Button design="Transparent" onClick={() => setSelected(new Set(openFindings.map((f) => f.id)))}>
+                            Select all
+                          </Button>
+                          <Button design="Transparent" onClick={() => setSelected(new Set())}>
+                            Deselect all
+                          </Button>
+                          <Button
+                            design="Transparent"
+                            onClick={() => setSelected(new Set(openFindings.filter(isMechanicallyFixable).map((f) => f.id)))}
+                          >
+                            Select only auto-fixable
+                          </Button>
+                          <Text style={{ alignSelf: "center", color: "var(--sapContent_LabelColor)" }}>
+                            {selected.size} of {openFindings.length} selected
+                          </Text>
+                        </FlexBox>
+                      )}
                       <Table
                         columns={
                           <>
@@ -347,7 +384,13 @@ export function ProgramDetailPage() {
                             </TableCell>
                             <TableCell>
                               <Text>
-                                [{f.suggestedFix.origin === "native_quick_fix" ? "quick-fix" : f.suggestedFix.origin === "ai_generated" ? "AI-fix" : "manual"}]{" "}
+                                [
+                                {isMechanicallyFixable(f)
+                                  ? f.suggestedFix.origin === "native_quick_fix"
+                                    ? "quick-fix"
+                                    : "AI-fix"
+                                  : "manual"}
+                                ]{" "}
                                 {f.suggestedFix.description}
                               </Text>
                             </TableCell>
@@ -441,14 +484,18 @@ export function ProgramDetailPage() {
                           </MessageStrip>
                           {program.findings.some((f) => f.status === "deferred") && (
                             <MessageStrip design="Information">
-                              {program.findings.filter((f) => f.status === "deferred").length} approved finding(s) have
-                              no automated fix behind them and are unchanged in the proposed source below — they need
-                              manual remediation, separately from this write:{" "}
-                              {program.findings
-                                .filter((f) => f.status === "deferred")
-                                .map((f) => `${f.checkName} (${f.objectName})`)
-                                .join("; ")}
-                              .
+                              <div>
+                                {program.findings.filter((f) => f.status === "deferred").length} approved finding(s)
+                                have no automated fix behind them and are unchanged in the proposed source below —
+                                they need manual remediation, separately from this write:
+                              </div>
+                              <ul style={{ margin: "0.25rem 0 0", paddingLeft: "1.25rem" }}>
+                                {deferredFindingSummary(program).map((g) => (
+                                  <li key={g.checkName}>
+                                    {g.checkName} × {g.count}
+                                  </li>
+                                ))}
+                              </ul>
                             </MessageStrip>
                           )}
                           {crossObjectContainers(program).map((depName) => (
@@ -489,7 +536,7 @@ export function ProgramDetailPage() {
                                 </Button>
                                 <Button
                                   design="Emphasized"
-                                  disabled={busy || !editedSource}
+                                  disabled={busy || !editedSource || editedSource === (program.baselineSource ?? "")}
                                   onClick={() => runAction(() => api.fixReview(program.id, "approve", editedSource, comment))}
                                 >
                                   Approve &amp; write to SAP
@@ -497,6 +544,13 @@ export function ProgramDetailPage() {
                               </FlexBox>
                             }
                           />
+                          {editedSource === (program.baselineSource ?? "") && (
+                            <Text style={{ color: "var(--sapContent_LabelColor)" }}>
+                              The proposed source is identical to the original — none of the approved findings had a
+                              mechanical fix to apply, so there's nothing to write to SAP. Edit the source directly
+                              above if you want to fix something by hand, or reject/park this program.
+                            </Text>
+                          )}
                         </div>
                       </Panel>
                     ) : (
@@ -618,6 +672,23 @@ function ValidationRow({ label, pass }: { label: string; pass: boolean }) {
 // instead of only ever seeing the primary object's (unaffected) diff.
 function crossObjectContainers(program: ProgramDetail): string[] {
   return Array.from(new Set(program.findings.filter((f) => f.containerObject !== program.name).map((f) => f.containerObject)));
+}
+
+/**
+ * Grouped by checkName with a count, not one line per finding — a real ATC
+ * run against a full-size program can have hundreds of deferred findings of
+ * only a handful of distinct check types, and listing each individually
+ * (as this used to) produced an unreadable wall of repeated text.
+ */
+function deferredFindingSummary(program: ProgramDetail): { checkName: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const f of program.findings) {
+    if (f.status !== "deferred") continue;
+    counts.set(f.checkName, (counts.get(f.checkName) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([checkName, count]) => ({ checkName, count }))
+    .sort((a, b) => b.count - a.count);
 }
 
 function DependencySourcePanel({ programId, depName }: { programId: string; depName: string }) {

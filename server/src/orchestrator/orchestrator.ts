@@ -221,15 +221,21 @@ export class Orchestrator {
     }
 
     if (decision !== "approve") {
-      for (const f of program.findings) f.status = "deferred";
+      for (const f of program.findings) f.status = "rejected";
       moveTo(program, "PARKED", "human:gate1", `gate1-${decision}`, comment);
       await this.store.save(program);
       return program;
     }
 
+    // "rejected" (a human explicitly did not select this finding for
+    // remediation scope) is a distinct outcome from "deferred" (a finding
+    // WAS approved but proposeRemediation couldn't mechanically apply a fix
+    // for it) — collapsing both into "deferred" made the Fix Review
+    // screen's "no automated fix" summary claim findings were "approved"
+    // when most of them had simply never been selected at all.
     const idsToApprove = approvedFindingIds && approvedFindingIds.length > 0 ? new Set(approvedFindingIds) : new Set(program.findings.map((f) => f.id));
     for (const f of program.findings) {
-      f.status = idsToApprove.has(f.id) ? "approved" : "deferred";
+      f.status = idsToApprove.has(f.id) ? "approved" : "rejected";
     }
     if (program.baselineTests) {
       for (const t of program.baselineTests.cases) t.humanConfirmed = true;

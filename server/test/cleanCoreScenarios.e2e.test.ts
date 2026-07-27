@@ -368,7 +368,7 @@ describe.each<AbapObjectType>(["CLASS", "FUNCTION_GROUP", "INCLUDE", "INTERFACE"
 // ---------------------------------------------------------------------------
 
 describe("scenario: Gate 1 partial approval only remediates the approved subset", () => {
-  it("leaves un-approved findings deferred and untouched by remediation", async () => {
+  it("marks un-approved findings rejected (never even in scope), distinct from deferred (approved but unfixable)", async () => {
     const store = new InMemoryProgramStore();
     const orchestrator = new Orchestrator(store, new MockSapClient());
 
@@ -380,9 +380,9 @@ describe("scenario: Gate 1 partial approval only remediates the approved subset"
 
     const proposed = await orchestrator.gate1Decision(program.id, "approve", [toApprove.id], "only this one");
 
-    expect(proposed.findings.find((f) => f.id === toApprove.id)?.status).not.toBe("deferred");
+    expect(proposed.findings.find((f) => f.id === toApprove.id)?.status).not.toBe("rejected");
     for (const f of rest) {
-      expect(proposed.findings.find((x) => x.id === f.id)?.status).toBe("deferred");
+      expect(proposed.findings.find((x) => x.id === f.id)?.status).toBe("rejected");
     }
   });
 });
