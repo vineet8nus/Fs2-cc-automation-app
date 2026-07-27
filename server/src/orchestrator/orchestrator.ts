@@ -14,6 +14,23 @@ import { assertTransitionAllowed } from "./stateMachine";
 
 const MAX_REMEDIATION_ATTEMPTS = 2;
 
+/**
+ * ABAP object names are case-insensitive in SAP itself, but a finding's
+ * containerObject is often derived from ATC's own location URI (always
+ * normalized to uppercase — see atcFindingClassifier.ts's
+ * extractContainerFromLocation), while `program.name` keeps whatever
+ * casing the object was entered with at intake (e.g. "ztest_vk2"). A
+ * case-sensitive `===` comparison between the two treats every one of the
+ * PRIMARY object's own findings as if they belonged to a different,
+ * unwritable object whenever the intake casing isn't already all-caps —
+ * confirmed live: every finding for a program named "ztest_vk2" was
+ * deferred as "found in ZTEST_VK2, not the primary object", even findings
+ * with a perfectly good mechanical fix, because "ztest_vk2" !== "ZTEST_VK2".
+ */
+function sameObject(a: string, b: string): boolean {
+  return a.toUpperCase() === b.toUpperCase();
+}
+
 function audit(program: Program, actor: string, action: string, from?: WorkflowState, to?: WorkflowState, details?: string) {
   const entry: AuditEntry = { timestamp: new Date().toISOString(), actor, action, fromState: from, toState: to, details };
   program.auditLog.push(entry);
@@ -266,7 +283,7 @@ export class Orchestrator {
     // non-match isn't a real guarantee if the same table/FM name were ever
     // to also appear in the primary object's own source for an unrelated
     // reason.
-    const crossObjectFindings = approved.filter((f) => f.containerObject !== program.name);
+    const crossObjectFindings = approved.filter((f) => !sameObject(f.containerObject, program.name));
     for (const f of crossObjectFindings) {
       f.status = "deferred";
       audit(
@@ -284,7 +301,7 @@ export class Orchestrator {
     // finding whose replacement can't be confirmed is deferred rather than
     // silently applied on a guess.
     const verifiedFindings: Finding[] = [];
-    for (const f of approved.filter((f) => f.containerObject === program.name)) {
+    for (const f of approved.filter((f) => sameObject(f.containerObject, program.name))) {
       if (f.suggestedFix.replacementObject) {
         const exists = await this.sap.objectExists(f.suggestedFix.replacementObject).catch(() => false);
         if (!exists) {

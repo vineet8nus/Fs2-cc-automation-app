@@ -50,6 +50,20 @@ function isMechanicallyFixable(f: Finding): boolean {
   return !!f.suggestedFix.replacementObject;
 }
 
+/**
+ * ABAP object names are case-insensitive in SAP, but a finding's
+ * containerObject is often derived from ATC's own location URI (always
+ * normalized to uppercase — see the server's extractContainerFromLocation),
+ * while the program's own name keeps whatever casing it was entered with at
+ * intake. A plain `===` here would treat every one of the primary object's
+ * own findings as belonging to some other, unwritable object whenever the
+ * intake casing isn't already all-caps (matches the same fix in
+ * orchestrator.ts).
+ */
+function sameObject(a: string, b: string): boolean {
+  return a.toUpperCase() === b.toUpperCase();
+}
+
 const STEP_TITLES = ["Object intake", "ATC findings", "Propose & approve fix", "Results & audit log"] as const;
 type Step = 1 | 2 | 3 | 4;
 
@@ -371,7 +385,7 @@ export function ProgramDetailPage() {
                               </Text>
                             </TableCell>
                             <TableCell>
-                              <Text>{f.containerObject === program.name ? f.containerObject : `${f.containerObject} (Include/Class)`}</Text>
+                              <Text>{sameObject(f.containerObject, program.name) ? f.containerObject : `${f.containerObject} (Include/Class)`}</Text>
                             </TableCell>
                             <TableCell>
                               <Text>{f.message}</Text>
@@ -671,7 +685,7 @@ function ValidationRow({ label, pass }: { label: string; pass: boolean }) {
 // actually see the code a deferred, cross-object finding refers to,
 // instead of only ever seeing the primary object's (unaffected) diff.
 function crossObjectContainers(program: ProgramDetail): string[] {
-  return Array.from(new Set(program.findings.filter((f) => f.containerObject !== program.name).map((f) => f.containerObject)));
+  return Array.from(new Set(program.findings.filter((f) => !sameObject(f.containerObject, program.name)).map((f) => f.containerObject)));
 }
 
 /**

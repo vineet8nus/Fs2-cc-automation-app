@@ -244,3 +244,58 @@ describe("orchestrator.rerunAnalysis re-runs discovery/analysis in place", () =>
     expect(rerun.proposedSource).toBeUndefined();
   });
 });
+
+/**
+ * A real ATC finding's containerObject is often derived from the finding's
+ * own location URI (always normalized to uppercase — see
+ * atcFindingClassifier.ts's extractContainerFromLocation), regardless of
+ * what casing the object was entered with at intake. This models exactly
+ * that: the program is ingested as "zlowercasetest" (lowercase), but its
+ * own findings come back attributed to "ZLOWERCASETEST" (uppercase) — a
+ * real, reproducible scenario (confirmed live against ztest_vk2), not a
+ * contrived edge case.
+ */
+class UppercaseAttributionSapClient extends MockSapClient implements SapClient {
+  async readObjectSource(name: string) {
+    return { name, type: "PROG", source: "REPORT zlowercasetest.\nSELECT * FROM mara INTO TABLE @DATA(lt_mara) UP TO 100 ROWS." };
+  }
+  async getDependencies(): Promise<DependencyObject[]> {
+    return [];
+  }
+  async runAtcCheck(): Promise<AtcRawFinding[]> {
+    return [
+      {
+        atcCheckId: "REAL_MARA_FINDING",
+        checkName: "Usage of Released APIs",
+        message: "Direct SELECT on table MARA is not released for Clean Core.",
+        objectName: "ZLOWERCASETEST",
+        foundInObject: "ZLOWERCASETEST",
+        priority: 2,
+        extensibilityLevel: "C",
+        fixOrigin: "native_quick_fix",
+        fixDescription: "Replace direct SELECT on MARA with released CDS view I_Product.",
+        replacementObject: "I_Product",
+        fixConfidence: "high",
+      },
+    ];
+  }
+}
+
+describe("orchestrator treats a finding's own containerObject as case-insensitively equal to the intake name", () => {
+  it("does not misclassify the primary object's own finding as cross-object just because intake casing differs from ATC's uppercase attribution", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new UppercaseAttributionSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "zlowercasetest", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    const finding = program.findings.find((f) => f.atcCheckId === "REAL_MARA_FINDING");
+    expect(finding?.containerObject).toBe("ZLOWERCASETEST");
+
+    const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
+
+    expect(proposed.findings.find((f) => f.id === finding!.id)?.status).toBe("fixed");
+    expect(proposed.auditLog.some((a) => a.action === "no-automated-fix")).toBe(false);
+    expect(proposed.proposedSource).not.toBe(proposed.baselineSource);
+  });
+});
