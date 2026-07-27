@@ -6,6 +6,22 @@ import { SapClient } from "../sap/SapClient";
  * docs/design/clean-core-migration-design.md §8. Every check must pass for
  * overallPass to be true — a partial pass is still a fail.
  */
+/** Maps this app's intake object type to the ADT type code runAtcCheck expects. Undefined/PROGRAM both fall through to runAtcCheck's own "PROG" default. */
+function toAdtType(objectType?: string): "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS" | undefined {
+  switch (objectType) {
+    case "INCLUDE":
+      return "INCL";
+    case "CLASS":
+      return "CLAS";
+    case "INTERFACE":
+      return "INTF";
+    case "CDS_VIEW":
+      return "DDLS";
+    default:
+      return undefined;
+  }
+}
+
 export async function runValidation(
   programName: string,
   objectNames: string[],
@@ -13,11 +29,12 @@ export async function runValidation(
   appliedFindings: Finding[],
   previouslyKnownFindings: Finding[],
   baseline: TestRunResult,
-  sap: SapClient
+  sap: SapClient,
+  objectType?: string
 ): Promise<ValidationReport> {
   const messages: string[] = [];
 
-  const activation = await sap.syntaxCheckAndActivate(programName, newSource);
+  const activation = await sap.syntaxCheckAndActivate(programName, newSource, objectType);
   messages.push(...activation.messages);
 
   let replacedObjectsExist = true;
@@ -30,7 +47,7 @@ export async function runValidation(
     }
   }
 
-  const rerun = await sap.runAtcCheck(objectNames, newSource);
+  const rerun = await sap.runAtcCheck(objectNames, newSource, toAdtType(objectType));
   const appliedCheckIds = new Set(appliedFindings.map((f) => f.atcCheckId));
   const stillFlagged = rerun.filter((r) => appliedCheckIds.has(r.atcCheckId));
   const atcFindingCleared = stillFlagged.length === 0;

@@ -180,7 +180,25 @@ describe("orchestrator surfaces findings from Includes/Classes with correct obje
 });
 
 describe("orchestrator guards unsupported object types in real mode", () => {
-  it("parks a non-PROGRAM object without touching SAP when SAP_INTEGRATION_MODE=real", async () => {
+  it("parks a FUNCTION_GROUP without touching SAP when SAP_INTEGRATION_MODE=real (container-vs-function-module mismatch)", async () => {
+    const prior = process.env.SAP_INTEGRATION_MODE;
+    process.env.SAP_INTEGRATION_MODE = "real";
+    try {
+      const store = new InMemoryProgramStore();
+      const orchestrator = new Orchestrator(store, new MockSapClient());
+
+      const [program] = await orchestrator.ingest([
+        { programName: "Z_FG_TEST", objectType: "FUNCTION_GROUP", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+      ]);
+
+      expect(program.state).toBe("PARKED");
+      expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(true);
+    } finally {
+      process.env.SAP_INTEGRATION_MODE = prior;
+    }
+  });
+
+  it("no longer parks a CLASS in real mode — it now proceeds through the live pipeline", async () => {
     const prior = process.env.SAP_INTEGRATION_MODE;
     process.env.SAP_INTEGRATION_MODE = "real";
     try {
@@ -191,8 +209,8 @@ describe("orchestrator guards unsupported object types in real mode", () => {
         { programName: "ZCL_TEST", objectType: "CLASS", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
       ]);
 
-      expect(program.state).toBe("PARKED");
-      expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(true);
+      expect(program.state).not.toBe("PARKED");
+      expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(false);
     } finally {
       process.env.SAP_INTEGRATION_MODE = prior;
     }

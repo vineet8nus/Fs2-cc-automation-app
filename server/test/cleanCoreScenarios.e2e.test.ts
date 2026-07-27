@@ -344,20 +344,36 @@ class NeverCalledSapClient extends MockSapClient implements SapClient {
   }
 }
 
-describe.each<AbapObjectType>(["CLASS", "FUNCTION_GROUP", "INCLUDE", "INTERFACE", "CDS_VIEW"])(
-  "scenario: real-mode guard parks unsupported primary object type %s",
+describe("scenario: real-mode guard parks unsupported primary object type FUNCTION_GROUP", () => {
+  it("parks a FUNCTION_GROUP without making any SAP call (container-vs-function-module mismatch)", async () => {
+    await withRealMode(async () => {
+      const store = new InMemoryProgramStore();
+      const orchestrator = new Orchestrator(store, new NeverCalledSapClient());
+
+      const [program] = await orchestrator.ingest([
+        { programName: "Z_FUNCTION_GROUP_TEST", objectType: "FUNCTION_GROUP", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+      ]);
+
+      expect(program.state).toBe("PARKED");
+      expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(true);
+    });
+  });
+});
+
+describe.each<AbapObjectType>(["CLASS", "INCLUDE", "INTERFACE", "CDS_VIEW"])(
+  "scenario: real-mode now allows primary object type %s through to the live pipeline",
   (objectType) => {
-    it(`parks a ${objectType} without making any SAP call`, async () => {
+    it(`does not park a ${objectType} — it proceeds through discovery/analysis like a PROGRAM`, async () => {
       await withRealMode(async () => {
         const store = new InMemoryProgramStore();
-        const orchestrator = new Orchestrator(store, new NeverCalledSapClient());
+        const orchestrator = new Orchestrator(store, new MockSapClient());
 
         const [program] = await orchestrator.ingest([
           { programName: `Z_${objectType}_TEST`, objectType, package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
         ]);
 
-        expect(program.state).toBe("PARKED");
-        expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(true);
+        expect(program.state).not.toBe("PARKED");
+        expect(program.auditLog.some((a) => a.action === "object-type-not-supported")).toBe(false);
       });
     });
   }

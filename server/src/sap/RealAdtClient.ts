@@ -124,6 +124,46 @@ export class RealAdtClient implements SapClient {
       );
       return { name: programName, type: "CLAS", source: String(response.data) };
     }
+    if (objectType === "INTERFACE") {
+      // Same collection family as classes (oo/*), confirmed via the
+      // abap-adt-api reference implementation's object-creation paths
+      // (oo/interfaces) — not yet live-verified end-to-end against
+      // SHD200SYSTEM for a real interface read/write, unlike PROG/INCL/CLAS.
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "get", url: `/sap/bc/adt/oo/interfaces/${encodedName}/source/main`, headers: { Accept: "text/plain" } },
+        { fetchCsrfToken: false }
+      );
+      return { name: programName, type: "INTF", source: String(response.data) };
+    }
+    if (objectType === "CDS_VIEW") {
+      // Per the abap-adt-api reference implementation's DDL-source creation
+      // path (ddic/ddl/sources). Not yet live-verified against
+      // SHD200SYSTEM — a CDS view's source is DDL, not classic ABAP, so
+      // downstream text-oriented logic (extractDependencies, the static
+      // rule engine) will mostly find nothing to say about it rather than
+      // anything actively wrong, but this is genuinely unproven territory
+      // compared to PROG/INCL/CLAS.
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "get", url: `/sap/bc/adt/ddic/ddl/sources/${encodedName}/source/main`, headers: { Accept: "text/plain" } },
+        { fetchCsrfToken: false }
+      );
+      return { name: programName, type: "DDLS", source: String(response.data) };
+    }
+    if (objectType === "FUNCTION_GROUP") {
+      // A function group is a container of function modules and includes,
+      // not itself a single addressable source unit the way a
+      // Program/Class/Interface/CDS view is — its actual clean-core
+      // violations live inside specific function modules
+      // (functions/groups/<fg>/fmodules/<fm>/source/main), which this app's
+      // intake doesn't separately model (there's no "which function
+      // module" field). Reading "the function group's own source" by name
+      // alone would be misleading, not just incomplete, so this stays an
+      // explicit unimplemented case — see orchestrator.ts, which still
+      // parks FUNCTION_GROUP objects rather than treating this as ready.
+      this.notConfigured("readObjectSource(FUNCTION_GROUP)");
+    }
     const response = await executeHttpRequest(
       { destinationName: this.destinationName },
       {
@@ -136,8 +176,8 @@ export class RealAdtClient implements SapClient {
     return { name: programName, type: "PROG", source: String(response.data) };
   }
 
-  async getDependencies(programName: string): Promise<DependencyObject[]> {
-    const source = await this.readObjectSource(programName);
+  async getDependencies(programName: string, objectType?: string): Promise<DependencyObject[]> {
+    const source = await this.readObjectSource(programName, objectType);
     return extractDependencies(source.source);
   }
 
@@ -158,11 +198,24 @@ export class RealAdtClient implements SapClient {
    * failure during the window, so the latter doesn't get dismissed as
    * "normal" when it isn't.
    */
-  async runAtcCheck(objectNames: string[], currentSource: string, objectType: "PROG" | "INCL" | "CLAS" = "PROG"): Promise<AtcRawFinding[]> {
+  async runAtcCheck(
+    objectNames: string[],
+    currentSource: string,
+    objectType: "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS" = "PROG"
+  ): Promise<AtcRawFinding[]> {
     const primaryName = objectNames[0];
     if (!primaryName) return runStaticAtcRules(currentSource);
 
-    const collection = objectType === "CLAS" ? "oo/classes" : objectType === "INCL" ? "programs/includes" : "programs/programs";
+    const collection =
+      objectType === "CLAS"
+        ? "oo/classes"
+        : objectType === "INCL"
+          ? "programs/includes"
+          : objectType === "INTF"
+            ? "oo/interfaces"
+            : objectType === "DDLS"
+              ? "ddic/ddl/sources"
+              : "programs/programs";
     const objectUri = `/sap/bc/adt/${collection}/${encodeURIComponent(primaryName.toLowerCase())}`;
     // ZNUS_SCI_DEF_CENTRAL (the earlier default here) is a generic static-
     // check variant (CVA/SLIN-style checks only) — it does NOT include the
@@ -360,10 +413,27 @@ export class RealAdtClient implements SapClient {
    */
   async syntaxCheckAndActivate(
     objectName: string,
-    source: string
+    source: string,
+    objectType?: string
   ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {
+    if (objectType === "FUNCTION_GROUP") {
+      // Same container-vs-function-module mismatch as readObjectSource — see
+      // that method's doc comment. There's no single "the function group's
+      // source" to write.
+      this.notConfigured("syntaxCheckAndActivate(FUNCTION_GROUP)");
+    }
     const encodedName = encodeURIComponent(objectName.toLowerCase());
-    const objectUri = `/sap/bc/adt/programs/programs/${encodedName}`;
+    const collection =
+      objectType === "INCLUDE"
+        ? "programs/includes"
+        : objectType === "CLASS"
+          ? "oo/classes"
+          : objectType === "INTERFACE"
+            ? "oo/interfaces"
+            : objectType === "CDS_VIEW"
+              ? "ddic/ddl/sources"
+              : "programs/programs";
+    const objectUri = `/sap/bc/adt/${collection}/${encodedName}`;
     const session = new SapSession();
     const opts = { fetchCsrfToken: false } as const;
     const messages: string[] = [];

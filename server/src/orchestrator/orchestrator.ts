@@ -118,13 +118,13 @@ export class Orchestrator {
       await this.store.save(program);
 
       const isRealMode = (process.env.SAP_INTEGRATION_MODE ?? "mock") === "real";
-      if (isRealMode && program.objectType !== "PROGRAM") {
+      if (isRealMode && program.objectType === "FUNCTION_GROUP") {
         moveTo(
           program,
           "PARKED",
           "system",
           "object-type-not-supported",
-          `${program.objectType} objects aren't read/written against the live system yet — only ABAP Programs/Includes are. Parked without touching SAP.`
+          `${program.objectType} objects aren't read/written against the live system yet — a function group is a container of function modules/includes, not a single addressable source unit, and this app's intake has no "which function module" field. Parked without touching SAP.`
         );
         await this.store.save(program);
         created.push(program);
@@ -190,13 +190,13 @@ export class Orchestrator {
     await this.store.save(program);
 
     const isRealMode = (process.env.SAP_INTEGRATION_MODE ?? "mock") === "real";
-    if (isRealMode && program.objectType !== "PROGRAM") {
+    if (isRealMode && program.objectType === "FUNCTION_GROUP") {
       moveTo(
         program,
         "PARKED",
         "system",
         "object-type-not-supported",
-        `${program.objectType} objects aren't read/written against the live system yet — only ABAP Programs/Includes are. Parked without touching SAP.`
+        `${program.objectType} objects aren't read/written against the live system yet — a function group is a container of function modules/includes, not a single addressable source unit, and this app's intake has no "which function module" field. Parked without touching SAP.`
       );
       await this.store.save(program);
       return program;
@@ -213,7 +213,7 @@ export class Orchestrator {
 
   /** Phases 2-4: Git baseline -> Discovery -> Analysis -> Baseline tests, up to Human Gate 1. */
   private async runAutomaticPipeline(program: Program): Promise<Program> {
-    const discovery = await runDiscovery(program.name, this.sap);
+    const discovery = await runDiscovery(program.name, this.sap, program.objectType);
     program.gitBaseline = runGitSync(program.name, discovery.programSource, discovery.dependencies, discovery.dependencySources);
     moveTo(program, "GIT_BASELINED", "GitSyncAgent", "baseline-snapshot", `commit ${program.gitBaseline.baselineCommit.slice(0, 10)}`);
     await this.store.save(program);
@@ -466,7 +466,8 @@ export class Orchestrator {
         fixedFindings,
         program.findings,
         program.baselineTests ?? { runAt: new Date().toISOString(), cases: [] },
-        this.sap
+        this.sap,
+        program.objectType
       );
     } catch (err) {
       // A failure here (e.g. an unimplemented write-path method in real

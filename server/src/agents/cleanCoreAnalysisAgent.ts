@@ -110,7 +110,10 @@ export async function runCleanCoreAnalysis(
   sap: SapClient,
   closureObjects: { name: string; source: string; type: "INCLUDE" | "CLASS" }[] = []
 ): Promise<Finding[]> {
-  const primaryAdtType = programSource.type === "CLAS" || programSource.type === "INCL" ? programSource.type : "PROG";
+  const primaryAdtType =
+    programSource.type === "CLAS" || programSource.type === "INCL" || programSource.type === "INTF" || programSource.type === "DDLS"
+      ? programSource.type
+      : "PROG";
   const atcFindings = await sap.runAtcCheck(objectNames, programSource.source, primaryAdtType);
   const primaryUsedRealAtc = usedRealAtc(atcFindings);
   const customFindings = runCustomRules(programName, programSource.source);

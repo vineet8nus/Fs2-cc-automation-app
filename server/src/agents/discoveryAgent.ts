@@ -21,9 +21,9 @@ export interface DiscoveryResult {
  * dropped — rather than failing the whole discovery run over one
  * unimplemented object-type endpoint.
  */
-export async function runDiscovery(programName: string, sap: SapClient): Promise<DiscoveryResult> {
-  const programSource = await sap.readObjectSource(programName);
-  const dependencies = await sap.getDependencies(programName);
+export async function runDiscovery(programName: string, sap: SapClient, objectType?: string): Promise<DiscoveryResult> {
+  const programSource = await sap.readObjectSource(programName, objectType);
+  const dependencies = await sap.getDependencies(programName, objectType);
   const dependencySources = await Promise.all(
     dependencies.map(async (dep) => {
       try {

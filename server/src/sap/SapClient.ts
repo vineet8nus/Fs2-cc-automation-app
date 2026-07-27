@@ -66,7 +66,15 @@ export interface SapClient {
    * endpoints, distinct from a program's — see RealAdtClient.
    */
   readObjectSource(programName: string, objectType?: string): Promise<ObjectSource>;
-  getDependencies(programName: string): Promise<DependencyObject[]>;
+  /**
+   * `objectType` is optional and additive — omitting it preserves the
+   * original behavior (a Program's own dependencies). Needed so a primary
+   * object that's itself a Class/Interface/CDS view (not just a Program)
+   * re-reads its OWN source via the correct ADT collection when deriving
+   * its dependency list, instead of always assuming the programs/programs
+   * endpoint.
+   */
+  getDependencies(programName: string, objectType?: string): Promise<DependencyObject[]>;
   /**
    * `currentSource` is the program's current source text. Real ATC inspects
    * whatever is actually active in the system, so a real implementation can
@@ -79,13 +87,21 @@ export interface SapClient {
    * `objectType` is optional and additive, same convention as
    * readObjectSource's — omitting it preserves existing call-site behavior.
    * RealAdtClient needs it to build the correct ADT collection (programs,
-   * includes, classes) for a real ATC run against `objectNames[0]`.
+   * includes, classes, interfaces, CDS views) for a real ATC run against
+   * `objectNames[0]`.
    */
-  runAtcCheck(objectNames: string[], currentSource: string, objectType?: "PROG" | "INCL" | "CLAS"): Promise<AtcRawFinding[]>;
+  runAtcCheck(objectNames: string[], currentSource: string, objectType?: "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS"): Promise<AtcRawFinding[]>;
   runAbapUnit(programName: string): Promise<UnitTestCaseResult[]>;
+  /**
+   * `objectType` is optional and additive — omitting it preserves the
+   * original behavior (writes/activates via the Program collection).
+   * RealAdtClient needs it to build the correct ADT collection for
+   * non-Program primary objects (Class/Interface/CDS view).
+   */
   syntaxCheckAndActivate(
     objectName: string,
-    source: string
+    source: string,
+    objectType?: string
   ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }>;
   objectExists(objectName: string): Promise<boolean>;
 }
