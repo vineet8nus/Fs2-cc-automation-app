@@ -85,4 +85,15 @@ export const api = {
   async retro() {
     return json<RetroMetrics>(await fetch("/api/retro"));
   },
+  /** Re-runs discovery/analysis against this same program (in place — no new row), picking up newly-added dependencies or a real ATC result if the RFC destination is back online. */
+  async rerunAnalysis(id: string) {
+    return json<ProgramDetail>(await fetch(`/api/programs/${id}/rerun`, { method: "POST" }));
+  },
+  async deleteProgram(id: string) {
+    const res = await fetch(`/api/programs/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error ?? `Request failed with ${res.status}`);
+    }
+  },
 };

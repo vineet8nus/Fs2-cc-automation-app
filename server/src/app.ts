@@ -154,6 +154,20 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Re-runs discovery/analysis against the same existing Program record —
+  // the fix for "re-checking a program just piles up duplicate rows and
+  // never shows fresh findings": this discards the prior pipeline results
+  // and re-derives them from whatever the SapClient returns right now,
+  // in place, instead of requiring a brand new intake row per re-check.
+  app.post("/api/programs/:id/rerun", async (req, res, next) => {
+    try {
+      const program = await orchestrator.rerunAnalysis(req.params.id);
+      res.json(program);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post("/api/programs/:id/gate1", async (req, res, next) => {
     try {
       const { decision, approvedFindingIds, comment } = req.body ?? {};

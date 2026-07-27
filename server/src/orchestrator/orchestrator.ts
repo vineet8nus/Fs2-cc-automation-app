@@ -111,6 +111,75 @@ export class Orchestrator {
     return created;
   }
 
+  /**
+   * Re-runs the fully-automatic pipeline (Git baseline -> Discovery ->
+   * Analysis -> Baseline tests) against the SAME existing Program record,
+   * instead of leaving the only path to a fresh check be re-uploading and
+   * accumulating a duplicate backlog row per re-check (the real symptom
+   * this fixes: repeatedly re-analyzing a program by re-creating it left a
+   * growing pile of stale rows, none of which reflected a genuine re-scan
+   * of the same object). Every pipeline-derived field is discarded and
+   * freshly recomputed against whatever the SapClient returns right now —
+   * this is the only way to pick up newly-added Includes/Classes, or a
+   * real ATC result once the RFC destination is back online, instead of
+   * being stuck with whatever was captured on the very first run. Intake
+   * metadata (name, package, business area, criticality, owner, id) and
+   * the full audit history are preserved, not reset.
+   *
+   * Allowed from any state — this is an explicit human reset action, not a
+   * normal linear workflow step, so it deliberately bypasses
+   * assertTransitionAllowed (via moveTo) for the reset hop itself, exactly
+   * like ingest() starting a brand new program from UPLOADED.
+   */
+  async rerunAnalysis(programId: string): Promise<Program> {
+    const program = await this.mustGet(programId);
+    const fromState = program.state;
+
+    audit(
+      program,
+      "human:rerun",
+      "rerun-requested",
+      fromState,
+      "UPLOADED",
+      `Discarding prior analysis (was ${fromState}) and re-running discovery/analysis from scratch.`
+    );
+    program.state = "UPLOADED";
+    program.dependencies = [];
+    program.findings = [];
+    program.worstExtensibilityLevel = undefined;
+    program.riskScore = undefined;
+    program.baselineTests = undefined;
+    program.gitBaseline = undefined;
+    program.baselineSource = undefined;
+    program.proposedSource = undefined;
+    program.validationReport = undefined;
+    program.transportNumber = undefined;
+    program.report = undefined;
+    program.remediationAttempts = 0;
+    await this.store.save(program);
+
+    const isRealMode = (process.env.SAP_INTEGRATION_MODE ?? "mock") === "real";
+    if (isRealMode && program.objectType !== "PROGRAM") {
+      moveTo(
+        program,
+        "PARKED",
+        "system",
+        "object-type-not-supported",
+        `${program.objectType} objects aren't read/written against the live system yet — only ABAP Programs/Includes are. Parked without touching SAP.`
+      );
+      await this.store.save(program);
+      return program;
+    }
+
+    try {
+      return await this.runAutomaticPipeline(program);
+    } catch (err) {
+      audit(program, "system", "pipeline-error", program.state, program.state, String(err));
+      await this.store.save(program);
+      return program;
+    }
+  }
+
   /** Phases 2-4: Git baseline -> Discovery -> Analysis -> Baseline tests, up to Human Gate 1. */
   private async runAutomaticPipeline(program: Program): Promise<Program> {
     const discovery = await runDiscovery(program.name, this.sap);

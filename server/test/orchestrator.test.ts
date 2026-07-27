@@ -196,3 +196,51 @@ describe("orchestrator guards unsupported object types in real mode", () => {
     }
   });
 });
+
+/** Returns a different dependency set on each successive getDependencies() call — models a real system where a re-scan can pick up a newly added Include. */
+class ChangingDependenciesSapClient extends MockSapClient implements SapClient {
+  private calls = 0;
+  async getDependencies(): Promise<DependencyObject[]> {
+    this.calls += 1;
+    return this.calls === 1 ? [] : [{ name: "ZCL_NEW_INCL", type: "INCLUDE", usedBy: "primary" }];
+  }
+}
+
+describe("orchestrator.rerunAnalysis re-runs discovery/analysis in place", () => {
+  it("discards prior findings/dependencies and re-derives them without creating a new program row", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new ChangingDependenciesSapClient());
+
+    const [first] = await orchestrator.ingest([
+      { programName: "ZRERUNTEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    expect(first.dependencies).toHaveLength(0);
+
+    const rerun = await orchestrator.rerunAnalysis(first.id);
+
+    expect(rerun.id).toBe(first.id);
+    expect(rerun.dependencies.map((d) => d.name)).toContain("ZCL_NEW_INCL");
+    expect(rerun.state).toBe("AWAITING_HUMAN_REVIEW_1");
+    expect(rerun.auditLog.some((a) => a.action === "rerun-requested")).toBe(true);
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("can rerun a program that already reached AWAITING_HUMAN_REVIEW_2, resetting transport/remediation state", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new MockSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZRERUNDONE", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
+    await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it");
+
+    const rerun = await orchestrator.rerunAnalysis(program.id);
+    expect(rerun.id).toBe(program.id);
+    expect(rerun.state).toBe("AWAITING_HUMAN_REVIEW_1");
+    expect(rerun.transportNumber).toBeUndefined();
+    expect(rerun.remediationAttempts).toBe(0);
+    expect(rerun.validationReport).toBeUndefined();
+    expect(rerun.proposedSource).toBeUndefined();
+  });
+});

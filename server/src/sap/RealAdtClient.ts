@@ -5,6 +5,29 @@ import { extractDependencies, runStaticAtcRules } from "./staticCleanCoreRules";
 import { parseAtcWorklistFindings } from "./atcFindingClassifier";
 import { parseAbapUnitResults } from "./abapUnitParser";
 
+// The ATC RFC destination backing real ATC runs is only kept up 10AM-6PM
+// Singapore time on weekdays (confirmed by the team operating it) — a live
+// attempt outside that window is guaranteed to fail, so runAtcCheck skips
+// straight to the static-engine fallback instead of waiting on a doomed
+// round trip. Configurable via env in case the actual window ever changes.
+const ATC_BUSINESS_HOURS_START = Number(process.env.SAP_ATC_BUSINESS_HOURS_START ?? "10");
+const ATC_BUSINESS_HOURS_END = Number(process.env.SAP_ATC_BUSINESS_HOURS_END ?? "18");
+const ATC_BUSINESS_HOURS_TZ = process.env.SAP_ATC_BUSINESS_HOURS_TZ ?? "Asia/Singapore";
+
+/** True if `now` falls within the ATC RFC destination's known uptime window (weekdays, ATC_BUSINESS_HOURS_START–END, ATC_BUSINESS_HOURS_TZ). */
+export function isAtcBusinessHours(now: Date = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: ATC_BUSINESS_HOURS_TZ,
+    hour: "numeric",
+    hourCycle: "h23",
+    weekday: "short",
+  }).formatToParts(now);
+  const hour = Number(parts.find((p) => p.type === "hour")?.value);
+  const weekday = parts.find((p) => p.type === "weekday")?.value;
+  const isWeekday = weekday !== "Sat" && weekday !== "Sun";
+  return isWeekday && hour >= ATC_BUSINESS_HOURS_START && hour < ATC_BUSINESS_HOURS_END;
+}
+
 /**
  * Accumulates cookies and the CSRF token across an entire multi-request
  * flow, since a single upfront capture isn't enough: the LOCK call itself
@@ -124,12 +147,16 @@ export class RealAdtClient implements SapClient {
    * is actually scoped to — see cleanCoreAnalysisAgent's call sites, always
    * one conceptual object's own source per call, primary or a closure
    * member). Falls back to the static rule engine (staticCleanCoreRules.ts)
-   * on ANY failure — confirmed necessary, not theoretical: the ATC RFC
-   * destination on this landscape is intentionally only kept up during
-   * business hours, so a night-time run must degrade gracefully rather than
-   * fail the whole analysis. The fallback's first finding is always a
-   * visible marker (not a silent substitution) so a report never looks like
-   * real ATC ran when it didn't.
+   * whenever real ATC isn't available — either because `isAtcBusinessHours`
+   * says the RFC destination's known uptime window (weekdays,
+   * ATC_BUSINESS_HOURS_START-END, ATC_BUSINESS_HOURS_TZ) hasn't started yet
+   * (skipped before ever attempting the doomed round trip), or the live
+   * call itself still fails for some other reason. The fallback's first
+   * finding is always a visible marker (not a silent substitution) so a
+   * report never looks like real ATC ran when it didn't — and its message
+   * distinguishes the routine off-hours case from a genuine unexpected
+   * failure during the window, so the latter doesn't get dismissed as
+   * "normal" when it isn't.
    */
   async runAtcCheck(objectNames: string[], currentSource: string, objectType: "PROG" | "INCL" | "CLAS" = "PROG"): Promise<AtcRawFinding[]> {
     const primaryName = objectNames[0];
@@ -138,6 +165,23 @@ export class RealAdtClient implements SapClient {
     const collection = objectType === "CLAS" ? "oo/classes" : objectType === "INCL" ? "programs/includes" : "programs/programs";
     const objectUri = `/sap/bc/adt/${collection}/${encodeURIComponent(primaryName.toLowerCase())}`;
     const checkVariant = process.env.SAP_ATC_CHECK_VARIANT ?? "ZNUS_SCI_DEF_CENTRAL";
+    const windowDescription = `${ATC_BUSINESS_HOURS_START}:00–${ATC_BUSINESS_HOURS_END}:00 ${ATC_BUSINESS_HOURS_TZ}, Monday–Friday`;
+
+    if (!isAtcBusinessHours()) {
+      const fallback = runStaticAtcRules(currentSource);
+      fallback.unshift({
+        atcCheckId: SYSTEM_ATC_FALLBACK_CHECK_ID,
+        checkName: "Live ATC unavailable",
+        message: `Skipped the live ATC run against ${primaryName} — outside the ATC RFC destination's known uptime window (${windowDescription}). Showing the static rule-engine approximation below instead of real ATC findings.`,
+        objectName: primaryName,
+        priority: 4,
+        extensibilityLevel: "A",
+        fixOrigin: "none",
+        fixDescription: `Re-run analysis during ${windowDescription} to get real findings.`,
+        fixConfidence: "low",
+      });
+      return fallback;
+    }
 
     try {
       const { worklistXml } = await this.triggerAtcRun(objectUri, checkVariant);
@@ -148,12 +192,12 @@ export class RealAdtClient implements SapClient {
       fallback.unshift({
         atcCheckId: SYSTEM_ATC_FALLBACK_CHECK_ID,
         checkName: "Live ATC unavailable",
-        message: `Live ATC run against ${primaryName} failed (${reason}) — showing the static rule-engine approximation below instead of real ATC findings. Commonly happens outside business hours when the ATC RFC destination is intentionally offline.`,
+        message: `Live ATC run against ${primaryName} failed (${reason}) even though this is currently within the ATC RFC destination's known uptime window (${windowDescription}) — this looks like a genuine, unexpected outage, not the routine off-hours case. Showing the static rule-engine approximation below instead of real ATC findings.`,
         objectName: primaryName,
         priority: 4,
         extensibilityLevel: "A",
         fixOrigin: "none",
-        fixDescription: "Re-run analysis once the ATC RFC destination is back online (business hours) to get real findings.",
+        fixDescription: "Re-run analysis once the ATC RFC destination is confirmed back online.",
         fixConfidence: "low",
       });
       return fallback;

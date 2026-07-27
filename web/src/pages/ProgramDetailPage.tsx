@@ -103,6 +103,54 @@ export function ProgramDetailPage() {
     }
   }
 
+  async function handleRerun() {
+    if (!program) return;
+    if (
+      !window.confirm(
+        `Re-run analysis for ${program.name}? This discards the current findings and any proposed fix, and re-analyzes from the live source — the same program record is updated in place, no duplicate row is created.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.rerunAnalysis(program.id);
+      setProgram(updated);
+      setSelected(new Set(updated.findings.filter((f) => f.status === "open").map((f) => f.id)));
+      setEditedSource(updated.state === "AWAITING_FIX_REVIEW" ? updated.proposedSource ?? "" : "");
+      setDiff("");
+      // A rerun can move the program BACKWARDS in the wizard (e.g. from
+      // AWAITING_FIX_REVIEW back to AWAITING_HUMAN_REVIEW_1) — unlike load()
+      // on a normal mount, maxStepReachedRef must be force-reset here rather
+      // than only ratcheted forward, or stale later steps would stay
+      // reachable even though the backend state no longer supports them.
+      const step = stepForState(updated);
+      maxStepReachedRef.current = step;
+      setViewStep(step);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!program) return;
+    if (!window.confirm(`Delete ${program.name}? This permanently removes it from the backlog and cannot be undone.`)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteProgram(program.id);
+      navigate("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
   const openFindings = program.findings.filter((f) => f.status === "open");
   const otherFindings = program.findings.filter((f) => f.status !== "open");
   const maxStep = maxStepReachedRef.current;
@@ -116,15 +164,21 @@ export function ProgramDetailPage() {
       headerTitle={
         <DynamicPageTitle
           breadcrumbs={
-            <Breadcrumbs>
-              <BreadcrumbsItem onClick={() => navigate("/")}>Programs</BreadcrumbsItem>
+            // Click handling for a breadcrumb hop lives on <Breadcrumbs>'s
+            // onItemClick (the web component's real "item-click" event) —
+            // an onClick prop on an individual <BreadcrumbsItem> is never
+            // fired by the underlying UI5 web component, so it silently did
+            // nothing. Only "Programs" (not the current-page item) is ever
+            // clickable here.
+            <Breadcrumbs onItemClick={() => navigate("/")}>
+              <BreadcrumbsItem>Programs</BreadcrumbsItem>
               <BreadcrumbsItem>{program.name}</BreadcrumbsItem>
             </Breadcrumbs>
           }
           header={<Title level="H2">{program.name}</Title>}
           subHeader={<Label>{objectTypeLabel(program.objectType)}</Label>}
           actions={
-            <FlexBox style={{ gap: "0.5rem" }}>
+            <FlexBox style={{ gap: "0.5rem", alignItems: "center" }}>
               <StateBadge state={program.state} />
               <LevelBadge level={program.worstExtensibilityLevel} />
               <RiskBadge riskScore={program.riskScore} />
@@ -134,24 +188,41 @@ export function ProgramDetailPage() {
       }
       headerContent={
         <DynamicPageHeader>
-          <FlexBox style={{ gap: "1.5rem", alignItems: "center", flexWrap: "wrap" }}>
-            <Avatar size="M" initials={program.name.slice(0, 2).toUpperCase()} colorScheme="Accent6" />
-            <div>
-              <Label>Package</Label>
-              <Text style={{ display: "block" }}>{program.package}</Text>
-            </div>
-            <div>
-              <Label>Business process area</Label>
-              <Text style={{ display: "block" }}>{program.businessArea}</Text>
-            </div>
-            <div>
-              <Label>Criticality</Label>
-              <Text style={{ display: "block" }}>{program.criticality}</Text>
-            </div>
-            <div>
-              <Label>Owner</Label>
-              <Text style={{ display: "block" }}>{program.owner}</Text>
-            </div>
+          <FlexBox style={{ gap: "1.5rem", alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
+            <FlexBox style={{ gap: "1.5rem", alignItems: "center", flexWrap: "wrap" }}>
+              <Avatar size="M" initials={program.name.slice(0, 2).toUpperCase()} colorScheme="Accent6" />
+              <div>
+                <Label>Package</Label>
+                <Text style={{ display: "block" }}>{program.package}</Text>
+              </div>
+              <div>
+                <Label>Business process area</Label>
+                <Text style={{ display: "block" }}>{program.businessArea}</Text>
+              </div>
+              <div>
+                <Label>Criticality</Label>
+                <Text style={{ display: "block" }}>{program.criticality}</Text>
+              </div>
+              <div>
+                <Label>Owner</Label>
+                <Text style={{ display: "block" }}>{program.owner}</Text>
+              </div>
+            </FlexBox>
+            {/* Deliberately NOT in DynamicPageTitle's `actions` slot: that
+                slot has its own responsive overflow-popover behavior, and
+                adding more buttons there pushed it right to the width
+                threshold where it endlessly toggled buttons in/out of the
+                overflow menu (observed as a runaway ResizeObserver
+                measure/collapse/expand loop). This plain FlexBox has no
+                such responsive logic. */}
+            <FlexBox style={{ gap: "0.5rem", alignItems: "center" }}>
+              <Button icon="refresh" disabled={busy} onClick={handleRerun}>
+                Re-run analysis
+              </Button>
+              <Button icon="delete" design="Negative" disabled={busy} onClick={handleDelete}>
+                Delete
+              </Button>
+            </FlexBox>
           </FlexBox>
         </DynamicPageHeader>
       }

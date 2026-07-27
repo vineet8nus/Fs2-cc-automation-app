@@ -107,6 +107,12 @@ export function ProgramListPage() {
     });
   }, [programs, search, statusFilter, criticalityFilter]);
 
+  async function handleDelete(id: string, name: string) {
+    if (!window.confirm(`Delete ${name}? This permanently removes it from the backlog and cannot be undone.`)) return;
+    await api.deleteProgram(id);
+    setPrograms((prev) => prev.filter((p) => p.id !== id));
+  }
+
   return (
     <DynamicPage
       headerTitle={
@@ -192,6 +198,7 @@ export function ProgramListPage() {
                   <TableColumn>Extensibility</TableColumn>
                   <TableColumn>Risk</TableColumn>
                   <TableColumn>Findings</TableColumn>
+                  <TableColumn>Actions</TableColumn>
                 </>
               }
               noDataText="No programs match these filters."
@@ -225,6 +232,18 @@ export function ProgramListPage() {
                   </TableCell>
                   <TableCell>
                     <Text>{p.findingsCount}</Text>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      icon="delete"
+                      design="Transparent"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(p.id, p.name);
+                      }}
+                    >
+                      Delete
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}
