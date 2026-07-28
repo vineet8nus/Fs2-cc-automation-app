@@ -181,6 +181,19 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // "Try again" after ESCALATED — re-enters the human-gated remediation
+  // cycle (REMEDIATING -> AWAITING_FIX_REVIEW) from the last proposed
+  // source, rather than silently re-writing to SAP. See
+  // Orchestrator.retryFromEscalation.
+  app.post("/api/programs/:id/retry", async (req, res, next) => {
+    try {
+      const program = await orchestrator.retryFromEscalation(req.params.id);
+      res.json(program);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post("/api/programs/:id/gate1", async (req, res, next) => {
     try {
       const { decision, approvedFindingIds, comment } = req.body ?? {};

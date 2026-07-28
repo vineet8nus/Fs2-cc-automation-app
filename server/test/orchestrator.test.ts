@@ -41,6 +41,37 @@ describe("orchestrator resilience to unimplemented SapClient methods", () => {
     // program stuck mid-transition.
     expect((await store.get(program.id))?.state).toBe("ESCALATED");
   });
+
+  it("retryFromEscalation re-enters the human-gated fix-review cycle instead of re-writing directly", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new ThrowsOnActivateSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZRETRYTEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
+    const escalated = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "approve write");
+    expect(escalated.state).toBe("ESCALATED");
+
+    const retried = await orchestrator.retryFromEscalation(program.id);
+
+    // A fresh proposal, sent back to Fix Review for a new human approval —
+    // never straight back to VALIDATING/SAP without one.
+    expect(retried.state).toBe("AWAITING_FIX_REVIEW");
+    expect(retried.auditLog.some((a) => a.action === "escalation-retry-requested")).toBe(true);
+  });
+
+  it("retryFromEscalation refuses to run from any state other than ESCALATED", async () => {
+    const store = new InMemoryProgramStore();
+    const orchestrator = new Orchestrator(store, new MockSapClient());
+
+    const [program] = await orchestrator.ingest([
+      { programName: "ZNOTESCALATED", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
+    ]);
+    expect(program.state).toBe("AWAITING_HUMAN_REVIEW_1");
+
+    await expect(orchestrator.retryFromEscalation(program.id)).rejects.toThrow(/not ESCALATED/);
+  });
 });
 
 // A SapClient where every suggested replacement object fails existence

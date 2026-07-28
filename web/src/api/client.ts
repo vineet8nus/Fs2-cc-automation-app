@@ -89,6 +89,9 @@ export const api = {
   async rerunAnalysis(id: string) {
     return json<ProgramDetail>(await fetch(`/api/programs/${id}/rerun`, { method: "POST" }));
   },
+  async retryEscalation(id: string) {
+    return json<ProgramDetail>(await fetch(`/api/programs/${id}/retry`, { method: "POST" }));
+  },
   async deleteProgram(id: string) {
     const res = await fetch(`/api/programs/${id}`, { method: "DELETE" });
     if (!res.ok) {

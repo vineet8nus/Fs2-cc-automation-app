@@ -167,6 +167,47 @@ export function ProgramDetailPage() {
     }
   }
 
+  async function handleRetry() {
+    if (!program) return;
+    if (
+      !window.confirm(
+        `Retry remediation for ${program.name}? This regenerates a fix proposal from the last attempted source and sends it back to Fix Review — you'll need to approve it again before anything is written to SAP.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.retryEscalation(program.id);
+      setProgram(updated);
+      setSelected(new Set(updated.findings.filter((f) => f.status === "open").map((f) => f.id)));
+      setEditedSource(updated.state === "AWAITING_FIX_REVIEW" ? updated.proposedSource ?? "" : "");
+      // ESCALATED (step 4) -> AWAITING_FIX_REVIEW (step 3) moves the wizard
+      // BACKWARDS — same reason handleRerun force-resets maxStepReachedRef
+      // rather than relying on load()'s forward-only ratchet.
+      const step = stepForState(updated);
+      maxStepReachedRef.current = step;
+      setViewStep(step);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRefresh() {
+    setBusy(true);
+    setError(null);
+    try {
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDelete() {
     if (!program) return;
     if (!window.confirm(`Delete ${program.name}? This permanently removes it from the backlog and cannot be undone.`)) {
@@ -248,11 +289,22 @@ export function ProgramDetailPage() {
                 measure/collapse/expand loop). This plain FlexBox has no
                 such responsive logic. */}
             <FlexBox style={{ gap: "0.5rem", alignItems: "center" }}>
+              {program.state === "ESCALATED" && (
+                <Button icon="redo" design="Emphasized" disabled={busy} onClick={handleRetry}>
+                  Try again
+                </Button>
+              )}
+              <Button icon="refresh" disabled={busy} onClick={handleRefresh}>
+                Refresh
+              </Button>
               <Button icon="refresh" disabled={busy} onClick={handleRerun}>
                 Re-run analysis
               </Button>
               <Button icon="delete" design="Negative" disabled={busy} onClick={handleDelete}>
                 Delete
+              </Button>
+              <Button icon="nav-back" disabled={busy} onClick={() => navigate("/")}>
+                Exit
               </Button>
             </FlexBox>
           </FlexBox>

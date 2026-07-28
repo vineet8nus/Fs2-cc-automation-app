@@ -15,6 +15,8 @@ import "@ui5/webcomponents-icons/dist/bar-chart.js";
 import "@ui5/webcomponents-icons/dist/delete.js";
 import "@ui5/webcomponents-icons/dist/list.js";
 import "@ui5/webcomponents-icons/dist/refresh.js";
+import "@ui5/webcomponents-icons/dist/redo.js";
+import "@ui5/webcomponents-icons/dist/nav-back.js";
 import { ThemeProvider } from "@ui5/webcomponents-react";
 import React from "react";
 import ReactDOM from "react-dom/client";

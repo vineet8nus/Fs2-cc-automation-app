@@ -536,6 +536,30 @@ export class Orchestrator {
     return program;
   }
 
+  /**
+   * Human-initiated retry after ESCALATED ("Try again" in the UI) — never
+   * re-writes to SAP directly, even though the human is explicitly asking
+   * to retry the write: it re-enters the same human-gated remediation cycle
+   * every other write goes through (REMEDIATING -> AWAITING_FIX_REVIEW),
+   * using the last proposed source as the starting point, exactly like the
+   * automatic validation-failed-retry path does internally. The human still
+   * has to approve the (possibly identical) proposal on the Fix Review
+   * screen before anything is written again. remediationAttempts is
+   * intentionally NOT reset — if this attempt also fails validation, it
+   * re-escalates immediately (the cap was already reached), which is
+   * correct: a manual retry is one more explicit shot, not a license to
+   * loop indefinitely.
+   */
+  async retryFromEscalation(programId: string): Promise<Program> {
+    const program = await this.mustGet(programId);
+    if (program.state !== "ESCALATED") {
+      throw new Error(`Program is in state ${program.state}, not ESCALATED.`);
+    }
+    moveTo(program, "REMEDIATING", "human:retry", "escalation-retry-requested");
+    await this.store.save(program);
+    return this.proposeRemediation(program, program.proposedSource);
+  }
+
   async diff(programId: string): Promise<string> {
     const program = await this.mustGet(programId);
     if (!program.gitBaseline) return "";
