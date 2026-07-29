@@ -474,8 +474,19 @@ export class Orchestrator {
       // mode) must not leave the program stuck in VALIDATING with no way
       // to retry — escalate immediately with the real cause on record,
       // rather than letting the exception bubble out of an already-
-      // persisted state transition.
-      moveTo(program, "ESCALATED", "ValidationAgent", "validation-error", err instanceof Error ? err.message : String(err));
+      // persisted state transition. Axios only puts a generic "Request
+      // failed with status code 400" in err.message — the actual SAP-side
+      // reason lives in err.response.data (and, for the write/activate
+      // step specifically, in the debugMessages RealAdtClient attaches for
+      // exactly this reason, per the diagnostics routes in app.ts doing
+      // the same). Without unpacking those, every real-mode escalation
+      // reads identically regardless of cause and can't be diagnosed from
+      // the audit trail alone.
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      const parts = [e.message ?? String(err)];
+      if (e.response?.status) parts.push(`HTTP ${e.response.status}: ${String(e.response.data).slice(0, 800)}`);
+      if (e.debugMessages?.length) parts.push(...e.debugMessages);
+      moveTo(program, "ESCALATED", "ValidationAgent", "validation-error", parts.join(" | "));
       await this.store.save(program);
       return program;
     }
