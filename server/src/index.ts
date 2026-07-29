@@ -1,9 +1,10 @@
 import { createApp } from "./app";
-import { createProgramStore } from "./store";
+import { createProgramStore, createTemplateStore } from "./store";
 
 async function main() {
   const store = await createProgramStore();
-  const { app } = createApp(store);
+  const templateStore = await createTemplateStore();
+  const { app } = createApp(store, templateStore);
   const port = Number(process.env.PORT ?? 4000);
 
   app.listen(port, () => {

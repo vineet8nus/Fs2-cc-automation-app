@@ -148,6 +148,19 @@ export interface TechSpecReport {
   markdown: string;
 }
 
+/**
+ * TSD/Unit Test doc generated from an uploaded NUS template (docxtemplater
+ * for the .docx TSD, `xlsx` cell-fill for the Unit Test workbook) — stored
+ * as base64 on the Program record, same durability model as `report`, so
+ * it's downloadable again after the fact without regenerating.
+ */
+export interface GeneratedDocument {
+  generatedAt: string;
+  filename: string;
+  /** Base64-encoded file bytes (.docx or .xlsx). */
+  base64: string;
+}
+
 export interface Program {
   id: string;
   name: string;
@@ -178,6 +191,8 @@ export interface Program {
   /** The real workbench transport request the human approver names at Gate 2 — captured, not merely a state label, since every fix eventually needs a transport (docs/design/clean-core-migration-design.md §6). */
   transportNumber?: string;
   report?: TechSpecReport;
+  tsdDocument?: GeneratedDocument;
+  unitTestDocument?: GeneratedDocument;
   remediationAttempts: number;
   createdAt: string;
   updatedAt: string;

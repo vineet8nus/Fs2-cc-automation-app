@@ -1,8 +1,21 @@
 import * as XLSX from "xlsx";
+import PizZip from "pizzip";
+import Docxtemplater from "docxtemplater";
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { InMemoryProgramStore } from "../src/store/store";
+
+// superagent (which supertest wraps) only auto-buffers known text/json mime
+// types into res.body — for the OOXML content types the doc-download
+// routes serve, res.body would otherwise be `{}` with the bytes nowhere
+// accessible, so binary downloads need an explicit accumulating parser.
+function binaryParser(res: NodeJS.ReadableStream & { setEncoding: (enc: string) => void }, callback: (err: Error | null, body: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.setEncoding("binary");
+  res.on("data", (chunk: string) => chunks.push(Buffer.from(chunk, "binary")));
+  res.on("end", () => callback(null, Buffer.concat(chunks)));
+}
 
 function buildExcel(rows: Record<string, unknown>[]): Buffer {
   const sheet = XLSX.utils.json_to_sheet(rows);
@@ -78,6 +91,25 @@ describe("end-to-end mock workflow", () => {
 
     const diff = await request(app).get(`/api/programs/${id}/diff`);
     expect(diff.status).toBe(200);
+
+    // TSD + Unit Test docs are auto-generated from the bundled NUS templates
+    // at Gate 2 approval — verify they're both real, well-formed files
+    // carrying the program's actual data, not just opaque blobs.
+    expect(gate2.body.tsdDocument?.filename).toBe("TSD_ZTEST_MATERIAL.docx");
+    expect(gate2.body.unitTestDocument?.filename).toBe("UnitTest_ZTEST_MATERIAL.xlsx");
+
+    const tsdRes = await request(app).get(`/api/programs/${id}/tsd`).buffer(true).parse(binaryParser);
+    expect(tsdRes.status).toBe(200);
+    const tsdZip = new PizZip(tsdRes.body as Buffer);
+    const tsdDoc = new Docxtemplater(tsdZip);
+    expect(tsdDoc.getFullText()).toContain("ZTEST_MATERIAL");
+
+    const utRes = await request(app).get(`/api/programs/${id}/unit-test-doc`).buffer(true).parse(binaryParser);
+    expect(utRes.status).toBe(200);
+    const wb = XLSX.read(utRes.body as Buffer, { type: "buffer" });
+    const summary = wb.Sheets["Summary"];
+    expect(summary["B2"].v).toBe("ZTEST_MATERIAL");
+    expect(summary["B9"].v).toBe("SHDK900001");
   });
 
   it("parks a program on Gate 1 rejection instead of remediating", async () => {

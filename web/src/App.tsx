@@ -6,6 +6,7 @@ import { CreateProgramPage } from "./pages/CreateProgramPage";
 import { ProgramDetailPage } from "./pages/ProgramDetailPage";
 import { ProgramListPage } from "./pages/ProgramListPage";
 import { RetroPage } from "./pages/RetroPage";
+import { TemplatesPage } from "./pages/TemplatesPage";
 
 export function App() {
   const navigate = useNavigate();
@@ -27,6 +28,7 @@ export function App() {
         <ShellBarItem icon="list" text="Programs" onClick={() => navigate("/")} />
         <ShellBarItem icon="add" text="Create" onClick={() => navigate("/create")} />
         <ShellBarItem icon="bar-chart" text="Process retro" onClick={() => navigate("/retro")} />
+        <ShellBarItem icon="document-text" text="Templates" onClick={() => navigate("/templates")} />
       </ShellBar>
       {isMock && sapIntegrationMode !== null && (
         <MessageStrip design="Negative" hideCloseButton style={{ borderRadius: 0 }}>
@@ -40,6 +42,7 @@ export function App() {
         <Route path="/create" element={<CreateProgramPage />} />
         <Route path="/programs/:id" element={<ProgramDetailPage />} />
         <Route path="/retro" element={<RetroPage />} />
+        <Route path="/templates" element={<TemplatesPage />} />
       </Routes>
     </div>
   );

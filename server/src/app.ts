@@ -6,16 +6,18 @@ import path from "node:path";
 import multer from "multer";
 import { Program } from "./domain/types";
 import { InMemoryProgramStore, ProgramStore } from "./store/store";
+import { InMemoryTemplateStore, TemplateStore } from "./store/TemplateStore";
 import { createSapClient } from "./sap";
 import { RealAdtClient } from "./sap/RealAdtClient";
 import { Orchestrator } from "./orchestrator/orchestrator";
 import { parseIntakeExcel } from "./utils/excelParser";
 import { computeRetroMetrics } from "./agents/processRetroAgent";
 import { AiCoreRemediationClient, loadAiCoreConfigFromEnv } from "./agents/aiRemediationAgent";
+import { generateTsdDocument, generateUnitTestDocument, loadSeedTemplate } from "./agents/documentAgent";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
+export function createApp(store: ProgramStore = new InMemoryProgramStore(), templateStore: TemplateStore = new InMemoryTemplateStore()) {
   const sap = createSapClient();
   // Only wired up in real mode — mock/demo runs never make a real (paid)
   // AI Core call, keeping the mock-mode pipeline exactly as deterministic
@@ -220,6 +222,28 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Generates the TSD + Unit Test docs from whatever template is currently
+  // uploaded (falling back to the bundled seed template if none is), and
+  // persists them on the program. Best-effort: a template/generation
+  // failure shouldn't undo an already-approved Gate 2/transport release, so
+  // this never throws — same "graceful degradation" pattern as the
+  // ATC/AI Core integrations.
+  async function generateAndAttachDocs(program: Program): Promise<void> {
+    try {
+      const tsdTemplate = (await templateStore.get("tsd"))?.data ?? loadSeedTemplate("tsd");
+      program.tsdDocument = generateTsdDocument(program, tsdTemplate);
+    } catch (err) {
+      console.warn(`[app] TSD generation failed for ${program.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      const unitTestTemplate = (await templateStore.get("unit_test"))?.data ?? loadSeedTemplate("unit_test");
+      program.unitTestDocument = generateUnitTestDocument(program, unitTestTemplate);
+    } catch (err) {
+      console.warn(`[app] Unit test doc generation failed for ${program.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await store.save(program);
+  }
+
   app.post("/api/programs/:id/gate2", async (req, res, next) => {
     try {
       const { decision, comment, transportNumber } = req.body ?? {};
@@ -227,7 +251,56 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
         return res.status(400).json({ error: "decision must be approve | request_changes" });
       }
       const program = await orchestrator.gate2Decision(req.params.id, decision, comment, transportNumber);
+      if (program.state === "DONE") await generateAndAttachDocs(program);
       res.json(program);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/programs/:id/tsd", async (req, res, next) => {
+    try {
+      const program = await store.get(req.params.id);
+      if (!program?.tsdDocument) return res.status(404).json({ error: "No TSD generated for this program yet." });
+      res.setHeader("Content-Disposition", `attachment; filename="${program.tsdDocument.filename}"`);
+      res.type("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.send(Buffer.from(program.tsdDocument.base64, "base64"));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/programs/:id/unit-test-doc", async (req, res, next) => {
+    try {
+      const program = await store.get(req.params.id);
+      if (!program?.unitTestDocument) return res.status(404).json({ error: "No unit test doc generated for this program yet." });
+      res.setHeader("Content-Disposition", `attachment; filename="${program.unitTestDocument.filename}"`);
+      res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.send(Buffer.from(program.unitTestDocument.base64, "base64"));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post("/api/templates/:key", upload.single("file"), async (req, res, next) => {
+    try {
+      const key = req.params.key;
+      if (key !== "tsd" && key !== "unit_test") return res.status(400).json({ error: "key must be tsd or unit_test" });
+      if (!req.file) return res.status(400).json({ error: "file is required" });
+      const stored = await templateStore.save(key, req.file.originalname, req.file.buffer);
+      res.json({ key: stored.key, filename: stored.filename, uploadedAt: stored.uploadedAt });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/templates", async (_req, res, next) => {
+    try {
+      const [tsd, unitTest] = await Promise.all([templateStore.get("tsd"), templateStore.get("unit_test")]);
+      res.json({
+        tsd: tsd ? { filename: tsd.filename, uploadedAt: tsd.uploadedAt } : { filename: "tsd-template.docx (bundled default)", uploadedAt: null },
+        unit_test: unitTest ? { filename: unitTest.filename, uploadedAt: unitTest.uploadedAt } : { filename: "unit-test-template.xlsx (bundled default)", uploadedAt: null },
+      });
     } catch (err) {
       next(err);
     }

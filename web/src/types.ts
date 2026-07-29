@@ -121,6 +121,8 @@ export interface ProgramDetail extends ProgramSummary {
   validationReport?: ValidationReport;
   gitBaseline?: GitBaseline;
   report?: { generatedAt: string; markdown: string };
+  tsdDocument?: { generatedAt: string; filename: string };
+  unitTestDocument?: { generatedAt: string; filename: string };
   remediationAttempts: number;
   auditLog: AuditEntry[];
 }

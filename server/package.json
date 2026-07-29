@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
     "start": "node dist/index.js",
     "test": "vitest run"
   },
@@ -13,9 +13,11 @@
     "@sap-cloud-sdk/connectivity": "^4.7.0",
     "@sap-cloud-sdk/http-client": "^4.7.0",
     "cors": "^2.8.5",
+    "docxtemplater": "^3.69.3",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.22.0",
+    "pizzip": "^3.2.0",
     "uuid": "^9.0.1",
     "xlsx": "^0.18.5"
   },

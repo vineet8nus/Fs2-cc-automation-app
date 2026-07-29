@@ -80,6 +80,26 @@ export const api = {
     if (!res.ok) throw new Error("Report not available yet");
     return res.text();
   },
+  async downloadTsd(id: string) {
+    const res = await fetch(`/api/programs/${id}/tsd`);
+    if (!res.ok) throw new Error("TSD not available yet");
+    return res.blob();
+  },
+  async downloadUnitTestDoc(id: string) {
+    const res = await fetch(`/api/programs/${id}/unit-test-doc`);
+    if (!res.ok) throw new Error("Unit test doc not available yet");
+    return res.blob();
+  },
+  async listTemplates() {
+    return json<Record<"tsd" | "unit_test", { filename: string; uploadedAt: string | null }>>(await fetch("/api/templates"));
+  },
+  async uploadTemplate(key: "tsd" | "unit_test", file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    return json<{ key: string; filename: string; uploadedAt: string }>(
+      await fetch(`/api/templates/${key}`, { method: "POST", body: form })
+    );
+  },
   async getDiff(id: string) {
     const res = await fetch(`/api/programs/${id}/diff`);
     return res.text();

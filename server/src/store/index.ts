@@ -1,5 +1,7 @@
 import { InMemoryProgramStore, ProgramStore } from "./store";
 import { PostgresProgramStore } from "./PostgresProgramStore";
+import { InMemoryTemplateStore, TemplateStore } from "./TemplateStore";
+import { PostgresTemplateStore } from "./PostgresTemplateStore";
 
 /**
  * Selects a durable Postgres-backed store whenever one is actually bound
@@ -45,4 +47,34 @@ export async function createProgramStore(): Promise<ProgramStore> {
   }
 }
 
+/** Same selection logic as createProgramStore, against its own table — see PostgresTemplateStore. */
+export async function createTemplateStore(): Promise<TemplateStore> {
+  const vcapRaw = process.env.VCAP_SERVICES;
+  if (!vcapRaw) return new InMemoryTemplateStore();
+
+  let credentials: { uri?: string; sslrootcert?: string; sslcert?: string } | undefined;
+  try {
+    const vcap = JSON.parse(vcapRaw);
+    credentials = vcap["postgresql-db"]?.[0]?.credentials;
+  } catch {
+    return new InMemoryTemplateStore();
+  }
+
+  if (!credentials?.uri) return new InMemoryTemplateStore();
+
+  try {
+    const store = new PostgresTemplateStore(credentials.uri, {
+      rejectUnauthorized: true,
+      ca: credentials.sslrootcert ?? credentials.sslcert,
+    });
+    await store.init();
+    console.log("[store] Using PostgresTemplateStore (durable) — schema/table confirmed.");
+    return store;
+  } catch (err) {
+    console.warn(`[store] Postgres binding present but template store init failed (${err instanceof Error ? err.message : String(err)}) — falling back to in-memory template store.`);
+    return new InMemoryTemplateStore();
+  }
+}
+
 export * from "./store";
+export * from "./TemplateStore";

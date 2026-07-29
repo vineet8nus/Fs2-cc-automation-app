@@ -701,7 +701,25 @@ export function ProgramDetailPage() {
                           <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{program.report.markdown}</pre>
                           <Bar
                             endContent={
-                              <Button onClick={() => downloadMarkdown(program.name, program.report!.markdown)}>Download report (.md)</Button>
+                              <FlexBox style={{ gap: "0.5rem" }}>
+                                <Button onClick={() => downloadMarkdown(program.name, program.report!.markdown)}>Download report (.md)</Button>
+                                {program.tsdDocument && (
+                                  <Button
+                                    onClick={async () => downloadBlob(await api.downloadTsd(program.id), program.tsdDocument!.filename)}
+                                  >
+                                    Download TSD (.docx)
+                                  </Button>
+                                )}
+                                {program.unitTestDocument && (
+                                  <Button
+                                    onClick={async () =>
+                                      downloadBlob(await api.downloadUnitTestDoc(program.id), program.unitTestDocument!.filename)
+                                    }
+                                  >
+                                    Download Unit Test doc (.xlsx)
+                                  </Button>
+                                )}
+                              </FlexBox>
                             }
                           />
                         </div>
@@ -803,6 +821,15 @@ function downloadMarkdown(programName: string, markdown: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = `${programName}-clean-core-report.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
