@@ -925,6 +925,89 @@ ${refs.map((r) => `  <adtcore:objectReference adtcore:uri="${r.uri}" adtcore:nam
     return { written: true, messages };
   }
 
+  /**
+   * Lock -> write -> unlock a CLAS include other than source/main (e.g.
+   * "includes/definitions", "includes/implementations") — needed for
+   * hand-written RAP behavior pool classes: a local handler class (`CLASS
+   * lhc_xxx DEFINITION/IMPLEMENTATION ...`) can't live in source/main
+   * alongside the global class body — a real PUT against source/main with
+   * two DEFINITION/IMPLEMENTATION pairs in it failed with
+   * "OO_SOURCE_BASED038: the class can't be separated into its different
+   * source parts" — it has to go in the class's own definitions/
+   * implementations includes instead, same as the ADT "New Behavior
+   * Implementation" wizard would write. No activation here; the caller
+   * combines it with the main source's activation via activateObjects.
+   */
+  async writeClassInclude(objectName: string, includeName: "definitions" | "implementations" | "macros", source: string, transportNumber?: string): Promise<{ written: boolean; messages: string[] }> {
+    const encodedName = encodeURIComponent(objectName.toLowerCase());
+    const objectUri = `/sap/bc/adt/oo/classes/${encodedName}`;
+    const session = new SapSession();
+    const opts = { fetchCsrfToken: false } as const;
+    const messages: string[] = [];
+
+    const tokenFetch = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+      opts
+    );
+    session.absorb(tokenFetch.headers);
+
+    const lockResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      {
+        method: "post",
+        url: `${objectUri}?_action=LOCK&accessMode=MODIFY`,
+        headers: { Accept: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.lock.Result2", ...session.headers(true) },
+      },
+      opts
+    );
+    session.absorb(lockResponse.headers);
+    const lockHandleMatch = String(lockResponse.data).match(/<LOCK_HANDLE>([^<]*)<\/LOCK_HANDLE>/);
+    const lockHandle = lockHandleMatch?.[1];
+    if (!lockHandle) {
+      messages.push(`Could not acquire a lock handle: ${String(lockResponse.data).slice(0, 300)}`);
+      return { written: false, messages };
+    }
+    messages.push(`Locked ${objectName} (handle acquired).`);
+
+    try {
+      const writeResponse = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        {
+          method: "put",
+          url: `${objectUri}/includes/${includeName}?lockHandle=${encodeURIComponent(lockHandle)}${
+            transportNumber ? `&corrNr=${encodeURIComponent(transportNumber)}` : ""
+          }`,
+          data: source,
+          headers: { "Content-Type": "text/plain; charset=utf-8", ...session.headers(true) },
+        },
+        opts
+      );
+      session.absorb(writeResponse.headers);
+      messages.push(`Include "${includeName}" written (inactive version).`);
+    } catch (err) {
+      if (err && typeof err === "object") (err as { debugMessages?: string[] }).debugMessages = messages;
+      await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "post", url: `${objectUri}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`, headers: { ...session.headers(true) } },
+        opts
+      ).catch(() => undefined);
+      throw err;
+    }
+
+    const unlockResponse = await executeHttpRequest(
+      { destinationName: this.destinationName },
+      { method: "post", url: `${objectUri}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`, headers: { ...session.headers(true) } },
+      opts
+    ).catch((err) => {
+      messages.push(`Warning: unlock failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (unlockResponse) session.absorb(unlockResponse.headers);
+    messages.push(`Unlocked ${objectName}.`);
+    return { written: true, messages };
+  }
+
   async writeAndActivateObjectSource(
     objectName: string,
     objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF" | "SRVD",

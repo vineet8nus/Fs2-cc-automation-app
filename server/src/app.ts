@@ -498,6 +498,30 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Write-only variant targeting a CLAS include other than source/main
+  // (definitions/implementations/macros) — see RealAdtClient.writeClassInclude.
+  // Needed for hand-written RAP behavior pool local handler classes.
+  app.post("/api/diagnostics/write-class-include", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { objectName, includeName, source, transportNumber } = req.body ?? {};
+    if (!["definitions", "implementations", "macros"].includes(includeName))
+      return res.status(400).json({ error: "includeName must be definitions, implementations, or macros" });
+    if (!objectName || !source) return res.status(400).json({ error: "objectName and source are required" });
+    try {
+      const result = await new RealAdtClient(destinationName).writeClassInclude(objectName, includeName, source, transportNumber);
+      res.json({ destinationName, ...result });
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; debugMessages?: string[] };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        debugMessages: e.debugMessages,
+      });
+    }
+  });
+
   // Combined activation for objects that reference each other (RAP root
   // composition <-> child to-parent association) — see
   // RealAdtClient.activateObjects.
