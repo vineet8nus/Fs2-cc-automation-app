@@ -53,7 +53,7 @@ describe("end-to-end mock workflow", () => {
 
     const fixReview = await request(app)
       .post(`/api/programs/${id}/fix-review`)
-      .send({ decision: "approve", comment: "fix looks right, write it" });
+      .send({ decision: "approve", comment: "fix looks right, write it", transportNumber: "TR12345" });
     expect(fixReview.status).toBe(200);
     expect(["AWAITING_HUMAN_REVIEW_2", "ESCALATED"]).toContain(fixReview.body.state);
 

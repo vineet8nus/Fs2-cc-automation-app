@@ -31,7 +31,7 @@ describe("orchestrator resilience to unimplemented SapClient methods", () => {
     const proposed = await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
     expect(proposed.state).toBe("AWAITING_FIX_REVIEW");
 
-    const result = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "approve write");
+    const result = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "approve write", "TR12345");
 
     expect(result.state).toBe("ESCALATED");
     expect(result.state).not.toBe("VALIDATING");
@@ -50,7 +50,7 @@ describe("orchestrator resilience to unimplemented SapClient methods", () => {
       { programName: "ZRETRYTEST", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
     ]);
     await orchestrator.gate1Decision(program.id, "approve", undefined, "proceed");
-    const escalated = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "approve write");
+    const escalated = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "approve write", "TR12345");
     expect(escalated.state).toBe("ESCALATED");
 
     const retried = await orchestrator.retryFromEscalation(program.id);
@@ -284,7 +284,7 @@ describe("orchestrator.rerunAnalysis re-runs discovery/analysis in place", () =>
       { programName: "ZRERUNDONE", package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
     ]);
     await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
-    await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it");
+    await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it", "TR12345");
 
     const rerun = await orchestrator.rerunAnalysis(program.id);
     expect(rerun.id).toBe(program.id);

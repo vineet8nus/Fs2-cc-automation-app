@@ -117,11 +117,19 @@ export interface SapClient {
    * original behavior (writes/activates via the Program collection).
    * RealAdtClient needs it to build the correct ADT collection for
    * non-Program primary objects (Class/Interface/CDS view).
+   *
+   * `transportNumber` is required by SAP whenever the object's package is
+   * transportable (anything other than $TMP) — confirmed live: writing to
+   * ZTEST_VK2/ZEPTEST without one fails with "Parameter corrNr could not
+   * be found". Optional here only because MockSapClient/local-package
+   * objects don't need it; RealAdtClient forwards it as the `corrNr` query
+   * param when present.
    */
   syntaxCheckAndActivate(
     objectName: string,
     source: string,
-    objectType?: string
+    objectType?: string,
+    transportNumber?: string
   ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }>;
   objectExists(objectName: string): Promise<boolean>;
 }

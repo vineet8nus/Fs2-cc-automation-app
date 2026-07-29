@@ -453,7 +453,8 @@ export class RealAdtClient implements SapClient {
   async syntaxCheckAndActivate(
     objectName: string,
     source: string,
-    objectType?: string
+    objectType?: string,
+    transportNumber?: string
   ): Promise<{ syntaxOk: boolean; activated: boolean; messages: string[] }> {
     if (objectType === "FUNCTION_GROUP") {
       // Same container-vs-function-module mismatch as readObjectSource — see
@@ -507,7 +508,9 @@ export class RealAdtClient implements SapClient {
         { destinationName: this.destinationName },
         {
           method: "put",
-          url: `${objectUri}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
+          url: `${objectUri}/source/main?lockHandle=${encodeURIComponent(lockHandle)}${
+            transportNumber ? `&corrNr=${encodeURIComponent(transportNumber)}` : ""
+          }`,
           data: source,
           headers: { "Content-Type": "text/plain; charset=utf-8", ...session.headers(true) },
         },

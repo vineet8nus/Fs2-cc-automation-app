@@ -584,6 +584,12 @@ export function ProgramDetailPage() {
                           </FlexBox>
                           <Label>Comment</Label>
                           <TextArea value={comment} onInput={(e) => setComment(e.target.value)} rows={2} />
+                          <Label required>Transport request</Label>
+                          <Input
+                            value={transportNumber}
+                            onInput={(e) => setTransportNumber(e.target.value)}
+                            placeholder="e.g. SHDK900123 — required to write to a transportable package"
+                          />
                           <Bar
                             endContent={
                               <FlexBox style={{ gap: "0.5rem" }}>
@@ -602,8 +608,10 @@ export function ProgramDetailPage() {
                                 </Button>
                                 <Button
                                   design="Emphasized"
-                                  disabled={busy || !editedSource || editedSource === (program.baselineSource ?? "")}
-                                  onClick={() => runAction(() => api.fixReview(program.id, "approve", editedSource, comment))}
+                                  disabled={
+                                    busy || !editedSource || editedSource === (program.baselineSource ?? "") || !transportNumber.trim()
+                                  }
+                                  onClick={() => runAction(() => api.fixReview(program.id, "approve", editedSource, comment, transportNumber.trim()))}
                                 >
                                   Approve &amp; write to SAP
                                 </Button>

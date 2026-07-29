@@ -482,11 +482,11 @@ describe("scenario: validation keeps failing across every retry until the retry 
     const attempt1 = await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
     expect(attempt1.state).toBe("AWAITING_FIX_REVIEW");
 
-    const afterAttempt1 = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it");
+    const afterAttempt1 = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it", "TR12345");
     expect(afterAttempt1.state).toBe("AWAITING_FIX_REVIEW"); // auto-retried, not yet escalated
     expect(afterAttempt1.remediationAttempts).toBe(2);
 
-    const afterAttempt2 = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it again");
+    const afterAttempt2 = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it again", "TR12345");
     expect(afterAttempt2.state).toBe("ESCALATED");
     expect(afterAttempt2.auditLog.some((a) => a.action === "validation-failed-escalated")).toBe(true);
   });
@@ -539,11 +539,12 @@ describe("scenario: validation recovers on retry before the cap is reached", () 
       (await orchestrator.gate1Decision(program.id, "approve", undefined, "go")).id,
       "approve",
       undefined,
-      "write it"
+      "write it",
+      "TR12345"
     );
     expect(attempt1.state).toBe("AWAITING_FIX_REVIEW");
 
-    const attempt2 = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "retry");
+    const attempt2 = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "retry", "TR12345");
     expect(attempt2.state).toBe("AWAITING_HUMAN_REVIEW_2");
     expect(attempt2.validationReport?.overallPass).toBe(true);
   });
@@ -592,7 +593,7 @@ async function walkToGate2(orchestrator: Orchestrator, programName: string, stor
     { programName, package: "ZPKG", businessArea: "Test", criticality: "M", owner: "tester" },
   ]);
   await orchestrator.gate1Decision(program.id, "approve", undefined, "go");
-  const validated = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it");
+  const validated = await orchestrator.fixReviewDecision(program.id, "approve", undefined, "write it", "TR12345");
   expect(validated.state).toBe("AWAITING_HUMAN_REVIEW_2");
   return validated;
 }

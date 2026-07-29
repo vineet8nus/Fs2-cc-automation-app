@@ -450,7 +450,8 @@ export class Orchestrator {
     programId: string,
     decision: "approve" | "request_changes" | "reject",
     editedSource: string | undefined,
-    comment: string | undefined
+    comment: string | undefined,
+    transportNumber?: string
   ): Promise<Program> {
     const program = await this.mustGet(programId);
     if (program.state !== "AWAITING_FIX_REVIEW") {
@@ -471,7 +472,16 @@ export class Orchestrator {
       return this.proposeRemediation(program);
     }
 
-    // approve — this is the only path that writes to the real system.
+    // approve — this is the only path that writes to the real system. SAP
+    // rejects a write against a transportable package (anything other than
+    // $TMP) with "Parameter corrNr could not be found" unless a transport
+    // request is given — confirmed live against ZTEST_VK2/ZEPTEST. Gate 2's
+    // own transportNumber capture happens only *after* this write, too late
+    // to satisfy that requirement, so it must be collected here instead.
+    if (!transportNumber || !transportNumber.trim()) {
+      throw new Error("A transport request number is required to write to SAP.");
+    }
+    program.transportNumber = transportNumber.trim();
     const finalSource = editedSource ?? program.proposedSource;
     if (!finalSource) throw new Error("No proposed source available to approve.");
     if (editedSource && editedSource !== program.proposedSource) {
@@ -479,7 +489,7 @@ export class Orchestrator {
       if (!program.gitBaseline) throw new Error("Missing git baseline.");
       program.gitBaseline = commitRemediation(program.name, program.gitBaseline, editedSource, "human-edited fix before write approval");
     }
-    moveTo(program, "VALIDATING", "human:fix-review", "fix-review-approve-write", comment);
+    moveTo(program, "VALIDATING", "human:fix-review", "fix-review-approve-write", `TR ${program.transportNumber}${comment ? ` — ${comment}` : ""}`);
     await this.store.save(program);
     return this.validateAndFinish(program, finalSource);
   }
@@ -497,7 +507,8 @@ export class Orchestrator {
         program.findings,
         program.baselineTests ?? { runAt: new Date().toISOString(), cases: [] },
         this.sap,
-        program.objectType
+        program.objectType,
+        program.transportNumber
       );
     } catch (err) {
       // A failure here (e.g. an unimplemented write-path method in real

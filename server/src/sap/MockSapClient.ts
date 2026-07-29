@@ -142,7 +142,7 @@ export class MockSapClient implements SapClient {
     return names.map((n) => ({ name: n, pass: rnd() > 0.05 }));
   }
 
-  async syntaxCheckAndActivate(objectName: string, source: string) {
+  async syntaxCheckAndActivate(objectName: string, source: string, _objectType?: string, _transportNumber?: string) {
     const hasObviousError = /SYNTAX_ERROR_MARKER/.test(source);
     return {
       syntaxOk: !hasObviousError,

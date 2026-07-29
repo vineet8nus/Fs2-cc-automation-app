@@ -51,12 +51,18 @@ export const api = {
       })
     );
   },
-  async fixReview(id: string, decision: "approve" | "request_changes" | "reject", editedSource?: string, comment?: string) {
+  async fixReview(
+    id: string,
+    decision: "approve" | "request_changes" | "reject",
+    editedSource?: string,
+    comment?: string,
+    transportNumber?: string
+  ) {
     return json<ProgramDetail>(
       await fetch(`/api/programs/${id}/fix-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, editedSource, comment }),
+        body: JSON.stringify({ decision, editedSource, comment, transportNumber }),
       })
     );
   },

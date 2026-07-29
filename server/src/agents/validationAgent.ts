@@ -30,11 +30,12 @@ export async function runValidation(
   previouslyKnownFindings: Finding[],
   baseline: TestRunResult,
   sap: SapClient,
-  objectType?: string
+  objectType?: string,
+  transportNumber?: string
 ): Promise<ValidationReport> {
   const messages: string[] = [];
 
-  const activation = await sap.syntaxCheckAndActivate(programName, newSource, objectType);
+  const activation = await sap.syntaxCheckAndActivate(programName, newSource, objectType, transportNumber);
   messages.push(...activation.messages);
 
   let replacedObjectsExist = true;
