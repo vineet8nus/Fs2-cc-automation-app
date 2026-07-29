@@ -4,6 +4,8 @@ import {
   BreadcrumbsItem,
   Button,
   BusyIndicator,
+  ComboBox,
+  ComboBoxItem,
   DynamicPage,
   DynamicPageTitle,
   FileUploader,
@@ -27,6 +29,26 @@ import { OBJECT_TYPES } from "../components/objectTypes";
 import { AbapObjectType } from "../types";
 
 type Mode = "single" | "bulk";
+
+/**
+ * Curated, not enumerated — ADT has no generic REST endpoint to list all
+ * check variants configured on a system (confirmed against SHD200SYSTEM:
+ * /sap/bc/adt/atc/customizing only exposes the current default, not a
+ * catalog), so this is the two variants actually confirmed to exist there,
+ * with a free-text fallback via ComboBox for anything else. See
+ * RealAdtClient.runAtcCheck's own comment for how CC_CENTRAL vs DEF_CENTRAL
+ * were confirmed (298 vs 8 findings on the same real program).
+ */
+const ATC_CHECK_VARIANTS: { value: string; hint: string }[] = [
+  {
+    value: "ZNUS_SCI_CC_CENTRAL",
+    hint: "Clean Core (recommended) — includes the \"Usage of Released APIs\" checks. Use this for actual clean-core assessment/migration work.",
+  },
+  {
+    value: "ZNUS_SCI_DEF_CENTRAL",
+    hint: "Generic static checks only (SLIN/CVA-style) — no clean-core API-usage findings. Use only for a lightweight quality scan, not clean-core work.",
+  },
+];
 
 export function CreateProgramPage() {
   const [mode, setMode] = useState<Mode>("single");
@@ -64,6 +86,7 @@ function SingleObjectForm() {
   const [programName, setProgramName] = useState("");
   const [objectType, setObjectType] = useState<AbapObjectType>("PROGRAM");
   const [pkg, setPkg] = useState("");
+  const [atcCheckVariant, setAtcCheckVariant] = useState("ZNUS_SCI_CC_CENTRAL");
   const [businessArea, setBusinessArea] = useState("");
   const [criticality, setCriticality] = useState<"H" | "M" | "L">("M");
   const [owner, setOwner] = useState("");
@@ -72,16 +95,18 @@ function SingleObjectForm() {
   const navigate = useNavigate();
 
   const selectedType = OBJECT_TYPES.find((t) => t.value === objectType);
+  const selectedVariant = ATC_CHECK_VARIANTS.find((v) => v.value.toUpperCase() === atcCheckVariant.trim().toUpperCase());
 
   async function handleCreate() {
-    if (!programName.trim() || !pkg.trim()) return;
+    if (!programName.trim()) return;
     setBusy(true);
     setError(null);
     try {
       const program = await api.createProgram({
         programName: programName.trim(),
         objectType,
-        package: pkg,
+        package: pkg.trim() || undefined,
+        atcCheckVariant: atcCheckVariant.trim() || undefined,
         businessArea,
         criticality,
         owner,
@@ -129,8 +154,8 @@ function SingleObjectForm() {
                 ))}
               </Select>
             </FormItem>
-            <FormItem label="Package *">
-              <Input value={pkg} onInput={(e) => setPkg(e.target.value)} placeholder="e.g. ZCC" />
+            <FormItem label="Package">
+              <Input value={pkg} onInput={(e) => setPkg(e.target.value)} placeholder="leave blank to auto-detect from SAP" />
             </FormItem>
           </FormGroup>
           <FormGroup titleText="Classification">
@@ -154,12 +179,35 @@ function SingleObjectForm() {
               <Input value={owner} onInput={(e) => setOwner(e.target.value)} placeholder="e.g. your name" />
             </FormItem>
           </FormGroup>
+          <FormGroup titleText="ATC">
+            <FormItem label="ATC check variant">
+              <ComboBox
+                value={atcCheckVariant}
+                onInput={(e) => setAtcCheckVariant(e.target.value)}
+                onSelectionChange={(e) => setAtcCheckVariant(e.detail.item?.text ?? atcCheckVariant)}
+                placeholder="ZNUS_SCI_CC_CENTRAL"
+              >
+                {ATC_CHECK_VARIANTS.map((v) => (
+                  <ComboBoxItem key={v.value} text={v.value} />
+                ))}
+              </ComboBox>
+            </FormItem>
+          </FormGroup>
         </Form>
+        {selectedVariant ? (
+          <Text style={{ padding: "0 1rem", color: "var(--sapContent_LabelColor)" }}>{selectedVariant.hint}</Text>
+        ) : (
+          atcCheckVariant.trim() && (
+            <Text style={{ padding: "0 1rem", color: "var(--sapContent_LabelColor)" }}>
+              Custom variant — used as typed, not one of the two confirmed built-in options above.
+            </Text>
+          )
+        )}
         <BusyIndicator active={busy}>
           <Bar
             design="FloatingFooter"
             endContent={
-              <Button design="Emphasized" disabled={!programName.trim() || !pkg.trim() || busy} onClick={handleCreate}>
+              <Button design="Emphasized" disabled={!programName.trim() || busy} onClick={handleCreate}>
                 Create &amp; run discovery + analysis →
               </Button>
             }
@@ -196,8 +244,9 @@ function BulkUploadForm() {
         <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
           <Text>
             Upload an Excel file with the programs to assess. Expected columns: <b>Program Name</b>, Object Type
-            (Program/Class/Function Group/Include/Interface/CDS View — defaults to Program), Package, Business
-            Process Area, Business Criticality (H/M/L), Notes/Owner.
+            (Program/Class/Function Group/Include/Interface/CDS View — defaults to Program), Package (optional —
+            auto-detected from SAP when left blank), ATC Check Variant (optional — defaults to the clean-core
+            variant, ZNUS_SCI_CC_CENTRAL), Business Process Area, Business Criticality (H/M/L), Notes/Owner.
           </Text>
           <FileUploader accept=".xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] ?? null)}>
             <Button>Choose Excel file</Button>

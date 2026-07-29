@@ -90,8 +90,28 @@ export interface SapClient {
    * includes, classes, interfaces, CDS views) for a real ATC run against
    * `objectNames[0]`.
    */
-  runAtcCheck(objectNames: string[], currentSource: string, objectType?: "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS"): Promise<AtcRawFinding[]>;
+  /**
+   * `checkVariant` lets a caller pick which central ATC check variant to run
+   * (e.g. the clean-core variant vs. a generic static-check-only one) —
+   * omitting it preserves each implementation's own default
+   * (SAP_ATC_CHECK_VARIANT env var / ZNUS_SCI_CC_CENTRAL for RealAdtClient).
+   */
+  runAtcCheck(
+    objectNames: string[],
+    currentSource: string,
+    objectType?: "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS",
+    checkVariant?: string
+  ): Promise<AtcRawFinding[]>;
   runAbapUnit(programName: string): Promise<UnitTestCaseResult[]>;
+  /**
+   * Best-effort lookup of the ABAP package (TADIR devclass) an existing
+   * object already lives in, via its ADT object metadata (packageRef) —
+   * lets intake leave Package blank for an object that already exists in
+   * SAP instead of requiring it to be retyped by hand. Returns undefined
+   * if the object doesn't exist yet or the lookup fails for any reason;
+   * callers must not treat that as fatal.
+   */
+  getObjectPackage(objectName: string, objectType?: string): Promise<string | undefined>;
   /**
    * `objectType` is optional and additive — omitting it preserves the
    * original behavior (writes/activates via the Program collection).

@@ -103,6 +103,7 @@ export class Orchestrator {
         name: row.programName,
         objectType: row.objectType ?? "PROGRAM",
         package: row.package,
+        atcCheckVariant: row.atcCheckVariant,
         businessArea: row.businessArea,
         criticality: row.criticality,
         owner: row.owner,
@@ -213,6 +214,28 @@ export class Orchestrator {
 
   /** Phases 2-4: Git baseline -> Discovery -> Analysis -> Baseline tests, up to Human Gate 1. */
   private async runAutomaticPipeline(program: Program): Promise<Program> {
+    // Package is optional at intake now — an object already living in SAP
+    // already has a real package (TADIR devclass), so ask SAP for it rather
+    // than trusting free-text a human typed, which can silently drift from
+    // the truth (confirmed live: an intake row typed "asf" for an object
+    // whose actual ADT packageRef was ZEPTEST). Manually-typed values are
+    // still respected as-is; this only fills the gap when left blank.
+    if (!program.package || !program.package.trim() || program.package.trim().toUpperCase() === "UNKNOWN") {
+      const detected = await this.sap.getObjectPackage(program.name, program.objectType).catch(() => undefined);
+      program.package = detected ?? "UNKNOWN";
+      audit(
+        program,
+        "DiscoveryAgent",
+        "package-auto-detected",
+        undefined,
+        undefined,
+        detected
+          ? `Package left blank at intake — detected ${detected} from the object's own SAP metadata.`
+          : "Package left blank at intake and could not be auto-detected (object may not exist yet, or lookup failed) — left as UNKNOWN."
+      );
+      await this.store.save(program);
+    }
+
     const discovery = await runDiscovery(program.name, this.sap, program.objectType);
     program.gitBaseline = runGitSync(program.name, discovery.programSource, discovery.dependencies, discovery.dependencySources);
     moveTo(program, "GIT_BASELINED", "GitSyncAgent", "baseline-snapshot", `commit ${program.gitBaseline.baselineCommit.slice(0, 10)}`);
@@ -225,7 +248,14 @@ export class Orchestrator {
 
     const objectNames = [program.name, ...program.dependencies.map((d) => d.name)];
     const closureObjects = resolveClosureObjects(program.dependencies, discovery.dependencySources);
-    program.findings = await runCleanCoreAnalysis(objectNames, program.name, discovery.programSource, this.sap, closureObjects);
+    program.findings = await runCleanCoreAnalysis(
+      objectNames,
+      program.name,
+      discovery.programSource,
+      this.sap,
+      closureObjects,
+      program.atcCheckVariant
+    );
     program.worstExtensibilityLevel = worstExtensibilityLevel(program.findings);
     program.riskScore = computeRiskScore(program.findings, program.criticality, program.dependencies.length);
     moveTo(program, "ANALYZED", "CleanCoreAnalysisAgent", "atc-run-complete", `${program.findings.length} findings, risk ${program.riskScore.total} (${program.riskScore.band})`);

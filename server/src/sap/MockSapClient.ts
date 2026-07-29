@@ -122,7 +122,12 @@ export class MockSapClient implements SapClient {
     return deps;
   }
 
-  async runAtcCheck(objectNames: string[], currentSource: string, _objectType?: "PROG" | "INCL" | "CLAS"): Promise<AtcRawFinding[]> {
+  async runAtcCheck(
+    objectNames: string[],
+    currentSource: string,
+    _objectType?: "PROG" | "INCL" | "CLAS",
+    _checkVariant?: string
+  ): Promise<AtcRawFinding[]> {
     const programName = objectNames[0] ?? "UNKNOWN";
     return CATALOG.filter((rule) => rule.matchPattern.test(currentSource)).map((rule) => {
       const priority = rule.extensibilityLevel === "D" ? 1 : rule.extensibilityLevel === "C" ? 2 : 3;
@@ -153,5 +158,9 @@ export class MockSapClient implements SapClient {
     // catalog above are treated as existing; anything else is deemed to
     // exist unless it looks deliberately invalid (used by tests).
     return !/DOES_NOT_EXIST/.test(objectName);
+  }
+
+  async getObjectPackage(_objectName: string, _objectType?: string): Promise<string | undefined> {
+    return "ZMOCK_PKG";
   }
 }

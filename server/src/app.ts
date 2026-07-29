@@ -70,21 +70,21 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
 
   app.post("/api/programs", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { programName, objectType, package: pkg, businessArea, criticality, owner } = req.body ?? {};
+      const { programName, objectType, package: pkg, atcCheckVariant, businessArea, criticality, owner } = req.body ?? {};
       if (!programName || typeof programName !== "string") {
         return res.status(400).json({ error: "programName is required" });
       }
-      if (!pkg || typeof pkg !== "string") {
-        // Per docs/design/multi-object-dependency-remediation.md §6.2: the
-        // package scope for dependency-closure resolution defaults to the
-        // primary object's own package, so a new object must state it
-        // explicitly at intake rather than silently defaulting.
-        return res.status(400).json({ error: "package is required" });
-      }
+      // Package is no longer required at intake — an object that already
+      // exists in SAP has a real package the orchestrator can look up
+      // itself (Orchestrator.runAutomaticPipeline, via
+      // SapClient.getObjectPackage) instead of trusting free-text typed
+      // here, which can silently drift from the truth. Left blank when
+      // omitted; the pipeline fills it in.
       const row = {
         programName,
         objectType: OBJECT_TYPES.includes(objectType) ? objectType : "PROGRAM",
-        package: pkg,
+        package: typeof pkg === "string" ? pkg.trim() : "",
+        atcCheckVariant: typeof atcCheckVariant === "string" && atcCheckVariant.trim() ? atcCheckVariant.trim() : undefined,
         businessArea: businessArea || "General",
         criticality: ["H", "M", "L"].includes(criticality) ? criticality : "M",
         owner: owner || "Unassigned",

@@ -108,13 +108,14 @@ export async function runCleanCoreAnalysis(
   programName: string,
   programSource: ObjectSource,
   sap: SapClient,
-  closureObjects: { name: string; source: string; type: "INCLUDE" | "CLASS" }[] = []
+  closureObjects: { name: string; source: string; type: "INCLUDE" | "CLASS" }[] = [],
+  checkVariant?: string
 ): Promise<Finding[]> {
   const primaryAdtType =
     programSource.type === "CLAS" || programSource.type === "INCL" || programSource.type === "INTF" || programSource.type === "DDLS"
       ? programSource.type
       : "PROG";
-  const atcFindings = await sap.runAtcCheck(objectNames, programSource.source, primaryAdtType);
+  const atcFindings = await sap.runAtcCheck(objectNames, programSource.source, primaryAdtType, checkVariant);
   const primaryUsedRealAtc = usedRealAtc(atcFindings);
   const customFindings = runCustomRules(programName, programSource.source);
   const findings = [
@@ -126,7 +127,7 @@ export async function runCleanCoreAnalysis(
     const needsOwnAtcRun = obj.type === "CLASS" || !primaryUsedRealAtc;
     if (needsOwnAtcRun) {
       const objAdtType = obj.type === "CLASS" ? "CLAS" : "INCL";
-      const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source, objAdtType);
+      const objAtcFindings = await sap.runAtcCheck([obj.name], obj.source, objAdtType, checkVariant);
       findings.push(...objAtcFindings.map((f) => toFinding(f, pickContainer(f, obj.name))));
     }
     const objCustomFindings = runCustomRules(obj.name, obj.source);

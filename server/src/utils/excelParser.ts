@@ -44,7 +44,12 @@ export function parseIntakeExcel(buffer: Buffer): ExcelIntakeRow[] {
     result.push({
       programName,
       objectType: normalizeObjectType(firstDefined(row, ["Object Type", "Type"])),
+      // "UNKNOWN" here is a sentinel, not a real package — Orchestrator.
+      // runAutomaticPipeline treats it (like a truly blank value) as "try
+      // to auto-detect the real package from SAP," only keeping it as-is
+      // if that lookup also fails.
       package: String(firstDefined(row, ["Package", "Development Package"]) ?? "").trim() || "UNKNOWN",
+      atcCheckVariant: String(firstDefined(row, ["ATC Check Variant", "Check Variant"]) ?? "").trim() || undefined,
       businessArea: String(firstDefined(row, ["Business Process Area", "Business Area"]) ?? "").trim() || "General",
       criticality: normalizeCriticality(firstDefined(row, ["Business Criticality", "Criticality"])),
       owner: String(firstDefined(row, ["Notes/Owner", "Owner", "Notes"]) ?? "").trim() || "Unassigned",

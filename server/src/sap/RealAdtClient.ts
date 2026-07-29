@@ -182,6 +182,44 @@ export class RealAdtClient implements SapClient {
   }
 
   /**
+   * Reads the object's own ADT metadata document (the same GET as
+   * readObjectSource but without the /source/main suffix) and pulls the
+   * package name out of its packageRef element — confirmed against a real
+   * object on SHD200SYSTEM (adtcore:packageRef adtcore:name="..."). Lets
+   * intake leave Package blank for an object that already exists in SAP
+   * (the common case — assessing an existing program, not creating a new
+   * one) instead of requiring it to be retyped by hand and risking a
+   * mismatch with the real TADIR entry. Returns undefined on any failure
+   * (object doesn't exist yet, unsupported type, network error) — callers
+   * treat that as "couldn't auto-detect," never as fatal.
+   */
+  async getObjectPackage(objectName: string, objectType?: string): Promise<string | undefined> {
+    if (objectType === "FUNCTION_GROUP") return undefined;
+    const encodedName = encodeURIComponent(objectName.toLowerCase());
+    const collection =
+      objectType === "INCLUDE"
+        ? "programs/includes"
+        : objectType === "CLASS"
+          ? "oo/classes"
+          : objectType === "INTERFACE"
+            ? "oo/interfaces"
+            : objectType === "CDS_VIEW"
+              ? "ddic/ddl/sources"
+              : "programs/programs";
+    try {
+      const response = await executeHttpRequest(
+        { destinationName: this.destinationName },
+        { method: "get", url: `/sap/bc/adt/${collection}/${encodedName}`, headers: { Accept: "application/xml, */*" } },
+        { fetchCsrfToken: false }
+      );
+      const match = String(response.data).match(/packageRef[^>]*adtcore:name="([^"]+)"/);
+      return match?.[1];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Real ATC via the same create-worklist -> run -> poll-worklist flow
    * proven in triggerAtcRun, against `objectNames[0]` (the object this call
    * is actually scoped to — see cleanCoreAnalysisAgent's call sites, always
@@ -201,7 +239,8 @@ export class RealAdtClient implements SapClient {
   async runAtcCheck(
     objectNames: string[],
     currentSource: string,
-    objectType: "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS" = "PROG"
+    objectType: "PROG" | "INCL" | "CLAS" | "INTF" | "DDLS" = "PROG",
+    checkVariant?: string
   ): Promise<AtcRawFinding[]> {
     const primaryName = objectNames[0];
     if (!primaryName) return runStaticAtcRules(currentSource);
@@ -224,7 +263,7 @@ export class RealAdtClient implements SapClient {
     // SAP GUI on Z_TEST_GST_REP1: ZNUS_SCI_DEF_CENTRAL found 8 findings,
     // none of them clean-core API-usage findings, while the correct
     // clean-core variant found 298. ZNUS_SCI_CC_CENTRAL is that variant.
-    const checkVariant = process.env.SAP_ATC_CHECK_VARIANT ?? "ZNUS_SCI_CC_CENTRAL";
+    const effectiveCheckVariant = checkVariant?.trim() || process.env.SAP_ATC_CHECK_VARIANT || "ZNUS_SCI_CC_CENTRAL";
     const windowDescription = `${ATC_BUSINESS_HOURS_START}:00–${ATC_BUSINESS_HOURS_END}:00 ${ATC_BUSINESS_HOURS_TZ}, Monday–Friday`;
 
     if (!isAtcBusinessHours()) {
@@ -244,7 +283,7 @@ export class RealAdtClient implements SapClient {
     }
 
     try {
-      const { worklistXml } = await this.triggerAtcRun(objectUri, checkVariant);
+      const { worklistXml } = await this.triggerAtcRun(objectUri, effectiveCheckVariant);
       return parseAtcWorklistFindings(worklistXml);
     } catch (err) {
       const fallback = runStaticAtcRules(currentSource);

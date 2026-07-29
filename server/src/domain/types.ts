@@ -153,6 +153,8 @@ export interface Program {
   name: string;
   objectType: AbapObjectType;
   package: string;
+  /** Which central ATC check variant to run against this object — see CleanCoreAnalysisAgent / RealAdtClient.runAtcCheck. Defaults to the clean-core variant (ZNUS_SCI_CC_CENTRAL) when not set. */
+  atcCheckVariant?: string;
   businessArea: string;
   criticality: Criticality;
   owner: string;
@@ -186,6 +188,7 @@ export interface ExcelIntakeRow {
   programName: string;
   objectType?: AbapObjectType;
   package: string;
+  atcCheckVariant?: string;
   businessArea: string;
   criticality: Criticality;
   owner: string;

@@ -29,6 +29,7 @@ export const api = {
     programName: string;
     objectType?: string;
     package?: string;
+    atcCheckVariant?: string;
     businessArea?: string;
     criticality?: "H" | "M" | "L";
     owner?: string;
