@@ -522,6 +522,60 @@ export function createApp(store: ProgramStore = new InMemoryProgramStore()) {
     }
   });
 
+  // Raw activation passthrough — returns the full, unparsed ADT activation
+  // response for diagnosing an activation failure activateObjects's regex
+  // can't fully explain (e.g. only 2 of N messages surviving the type="E|A"
+  // filter). Doesn't write anything new; only activates already-saved
+  // inactive versions, same as activate-objects.
+  app.post("/api/diagnostics/activate-objects-raw", async (req, res) => {
+    const destinationName = process.env.SAP_DESTINATION_NAME ?? "SHD200SYSTEM";
+    const { refs } = req.body ?? {};
+    if (!Array.isArray(refs) || refs.length === 0) return res.status(400).json({ error: "refs must be a non-empty array of {objectName, objectType}" });
+    try {
+      const objectRefs = refs.map((r: { objectName: string; objectType: "CLAS" | "INTF" | "TABL" | "DDLS" | "BDEF" | "SRVD" | "SRVB" }) => ({
+        uri: `/sap/bc/adt/${RealAdtClient.collectionFor(r.objectType)}/${encodeURIComponent(r.objectName.toLowerCase())}`,
+        name: r.objectName,
+      }));
+      const body = `<?xml version="1.0" encoding="UTF-8"?>\n<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">\n${objectRefs
+        .map((r) => `  <adtcore:objectReference adtcore:uri="${r.uri}" adtcore:name="${r.name.toUpperCase()}"/>`)
+        .join("\n")}\n</adtcore:objectReferences>`;
+      const opts = { fetchCsrfToken: false } as const;
+      const tokenFetch = await executeHttpRequest(
+        { destinationName },
+        { method: "get", url: "/sap/bc/adt/discovery", headers: { "X-CSRF-Token": "Fetch", "X-sap-adt-sessiontype": "stateful" } },
+        opts
+      );
+      const setCookie = (tokenFetch.headers?.["set-cookie"] as string[] | undefined) ?? [];
+      const cookieHeader = setCookie.map((c) => c.split(";")[0]).join("; ");
+      const csrfToken = tokenFetch.headers?.["x-csrf-token"] as string | undefined;
+      const response = await executeHttpRequest(
+        { destinationName },
+        {
+          method: "post",
+          url: "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+          data: body,
+          headers: {
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+            ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+            ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+          },
+        },
+        opts
+      );
+      res.type("text/plain").send(typeof response.data === "string" ? response.data : JSON.stringify(response.data));
+    } catch (err) {
+      const e = err as { message?: string; response?: { status?: number; data?: unknown }; cause?: { message?: string } };
+      res.status(502).json({
+        destinationName,
+        error: e.message ?? String(err),
+        httpStatus: e.response?.status,
+        responseBody: e.response?.data,
+        cause: e.cause?.message,
+      });
+    }
+  });
+
   // Combined activation for objects that reference each other (RAP root
   // composition <-> child to-parent association) — see
   // RealAdtClient.activateObjects.
